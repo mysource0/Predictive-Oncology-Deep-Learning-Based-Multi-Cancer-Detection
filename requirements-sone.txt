@@ -1,0 +1,14 @@
+flask
+pandas
+seaborn
+matplotlib
+scikit-learn
+streamlit
+imutils
+tqdm
+ultralytics
+opencv-contrib-python
+tensorflow
+torch
+torchvision
+transformers

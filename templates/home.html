@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Predictive Oncology</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+<style>
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+    font-family:"Poppins", sans-serif;
+}
+
+/* Background - Medical Theme */
+body{
+    display:flex;
+    min-height:100vh;
+    background: linear-gradient(135deg,#0f172a,#1e3a8a,#2563eb);
+    color:white;
+}
+
+/* Sidebar (Right) */
+.sidebar{
+    position:fixed;
+    right:0;
+    top:0;
+    width:260px;
+    height:100%;
+    background:rgba(0,0,0,0.75);
+    backdrop-filter:blur(12px);
+    padding:30px;
+}
+
+.logo{
+    text-align:center;
+    font-size:20px;
+    font-weight:700;
+    color:#38bdf8;
+    margin-bottom:40px;
+}
+
+.sidebar a{
+    display:block;
+    color:white;
+    text-decoration:none;
+    padding:14px;
+    margin-bottom:12px;
+    border-radius:10px;
+    background:rgba(255,255,255,0.08);
+    transition:0.3s;
+}
+
+.sidebar a:hover{
+    background:linear-gradient(135deg,#38bdf8,#22c55e);
+    color:black;
+    transform:translateX(-5px);
+}
+
+/* Main */
+.main{
+    flex:1;
+    padding:40px;
+    margin-right:260px;
+}
+
+/* Container */
+.container{
+    max-width:1100px;
+    margin:auto;
+}
+
+/* Hero */
+.hero{
+    background:rgba(255,255,255,0.08);
+    backdrop-filter:blur(15px);
+    border-radius:25px;
+    padding:50px;
+    text-align:center;
+    box-shadow:0 25px 60px rgba(0,0,0,0.6);
+    animation:fadeUp 1s ease;
+}
+
+@keyframes fadeUp{
+    from{opacity:0; transform:translateY(40px);}
+    to{opacity:1; transform:translateY(0);}
+}
+
+.hero h1{
+    font-size:34px;
+    color:#38bdf8;
+    margin-bottom:20px;
+}
+
+.hero p{
+    font-size:16px;
+    line-height:1.7;
+    color:#e2e8f0;
+}
+
+/* Cards */
+.cards{
+    margin-top:30px;
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
+    gap:20px;
+}
+
+.card{
+    background:rgba(255,255,255,0.07);
+    padding:20px;
+    border-radius:15px;
+    transition:0.3s;
+    border:1px solid rgba(255,255,255,0.1);
+}
+
+.card:hover{
+    transform:scale(1.05);
+    box-shadow:0 10px 30px rgba(0,0,0,0.4);
+}
+
+.card h3{
+    color:#22c55e;
+    margin-bottom:10px;
+}
+
+.card p{
+    font-size:14px;
+    color:#cbd5f5;
+}
+
+/* Footer */
+footer{
+    margin-top:30px;
+    text-align:center;
+    font-size:13px;
+    color:#aaa;
+}
+
+/* Responsive */
+@media(max-width:900px){
+    .sidebar{display:none;}
+    .main{margin-right:0;}
+}
+</style>
+</head>
+
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+    <div class="logo">🧬 Oncology AI</div>
+    <a href="/detection">🔬 Detection</a>
+    <a href="/train">🧠 Train Model</a>
+    <a href="/model_info">📋 Model Info</a>
+    <a href="/home">🏠 Home</a>
+    <a href="/logout">🚪 Logout</a>
+</div>
+
+<!-- Main -->
+<div class="main">
+<div class="container">
+
+<!-- HERO -->
+<div class="hero">
+    <h1>Predictive Oncology: Multi-Cancer Detection</h1>
+    <p>
+        This intelligent system uses <strong>Deep Learning and Medical Imaging</strong> 
+        to detect multiple cancer types including <strong>Breast, Liver, and Skin cancers</strong>.  
+        It assists in <strong>early diagnosis, clinical decision-making, and risk prediction</strong>.
+    </p>
+</div>
+
+<!-- CARDS -->
+<div class="cards">
+
+<div class="card">
+<h3>🧠 Deep Learning</h3>
+<p>
+Advanced neural networks automatically learn patterns from medical images 
+to detect abnormalities and classify cancer types with high accuracy.
+</p>
+</div>
+
+<div class="card">
+<h3>🩺 Cancer Detection</h3>
+<p>
+System detects:
+• Breast (Normal, Benign, Malignant)  
+• Liver (Healthy, Fatty Liver)  
+• Skin (Dermatofibroma, Keratosis)
+</p>
+</div>
+
+<div class="card">
+<h3>⚙️ Models Used</h3>
+<p>
+• CNN – Custom deep learning model  
+• VGG16 – Feature extraction  
+• ResNet50 – High-performance architecture
+</p>
+</div>
+
+<div class="card">
+<h3>📊 Medical Features</h3>
+<p>
+Analyzes imaging patterns such as texture, density, and structural irregularities 
+to identify cancerous tissues.
+</p>
+</div>
+
+<div class="card">
+<h3>🏥 Clinical Impact</h3>
+<p>
+Supports doctors in early detection, reduces diagnosis time, 
+and improves patient survival rates.
+</p>
+</div>
+
+<div class="card">
+<h3>🎯 Output</h3>
+<p>
+Provides predicted cancer type along with medical suggestions 
+for further diagnosis and treatment.
+</p>
+</div>
+
+</div>
+
+<footer>
+⚠ This system is for research and educational purposes only. Always consult a medical professional.
+</footer>
+
+</div>
+</div>
+
+</body>
+</html>

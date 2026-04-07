@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+
+<meta charset="UTF-8">
+<title>Model Training | Predictive Oncology</title>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+<style>
+
+*{
+margin:0;
+padding:0;
+box-sizing:border-box;
+font-family:"Poppins",sans-serif;
+}
+
+/* Background */
+body{
+display:flex;
+min-height:100vh;
+background:linear-gradient(135deg,#0f172a,#1e3a8a,#06b6d4);
+color:white;
+}
+
+/* Sidebar */
+.sidebar{
+width:260px;
+background:rgba(0,0,0,0.7);
+padding:30px;
+position:fixed;
+height:100%;
+backdrop-filter:blur(12px);
+}
+
+.sidebar .logo{
+font-size:22px;
+text-align:center;
+color:#22c55e;
+margin-bottom:40px;
+font-weight:700;
+}
+
+.sidebar a{
+display:block;
+padding:14px;
+margin-bottom:15px;
+background:rgba(255,255,255,0.08);
+border-radius:10px;
+text-decoration:none;
+color:white;
+transition:0.3s;
+}
+
+.sidebar a:hover{
+background:linear-gradient(135deg,#22c55e,#4ade80);
+color:black;
+transform:translateX(5px);
+}
+
+/* Main */
+.main{
+margin-left:260px;
+width:100%;
+padding:40px;
+}
+
+/* Box */
+.box{
+background:rgba(255,255,255,0.08);
+padding:40px;
+border-radius:20px;
+backdrop-filter:blur(15px);
+box-shadow:0 30px 60px rgba(0,0,0,0.6);
+}
+
+/* Title */
+h2{
+text-align:center;
+margin-bottom:25px;
+color:#22c55e;
+}
+
+/* Logs */
+.logs{
+background:rgba(0,0,0,0.5);
+padding:20px;
+border-radius:12px;
+margin-bottom:25px;
+font-size:14px;
+line-height:1.6;
+}
+
+.logs p{
+margin-bottom:5px;
+}
+
+/* Cards */
+.card{
+background:rgba(0,0,0,0.45);
+padding:25px;
+border-radius:15px;
+margin-bottom:25px;
+text-align:center;
+transition:0.3s;
+}
+
+.card:hover{
+transform:scale(1.02);
+}
+
+.card h3{
+color:#38bdf8;
+margin-bottom:10px;
+}
+
+/* Images */
+.card img{
+width:100%;
+max-width:500px;
+margin-top:10px;
+border-radius:10px;
+box-shadow:0 10px 30px rgba(0,0,0,0.6);
+}
+
+/* Button */
+.btn{
+display:block;
+margin:25px auto;
+padding:12px 30px;
+background:linear-gradient(135deg,#22c55e,#16a34a);
+color:white;
+border:none;
+border-radius:25px;
+cursor:pointer;
+font-weight:600;
+transition:0.3s;
+}
+
+.btn:hover{
+transform:scale(1.05);
+box-shadow:0 10px 25px rgba(34,197,94,0.5);
+}
+
+.center-text{
+text-align:center;
+font-size:16px;
+color:#e2e8f0;
+}
+
+/* Responsive */
+@media(max-width:900px){
+.sidebar{display:none;}
+.main{margin-left:0;padding:20px;}
+}
+
+</style>
+</head>
+
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+<div class="logo">🧬 Oncology AI</div>
+
+<a href="/home">🏠 Home</a>
+<a href="/detection">🔬 Detection</a>
+<a href="/logout">🚪 Logout</a>
+</div>
+
+<!-- Main -->
+<div class="main">
+<div class="box">
+
+<h2>🧠 Model Training</h2>
+
+<!-- Flash Messages -->
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        {% for category, message in messages %}
+            <div style="padding:15px;border-radius:10px;margin-bottom:20px;background:rgba(34,197,94,0.2);color:#86efac;border-left:4px solid #22c55e;" class="alert alert-{{ category }}">
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endif %}
+{% endwith %}
+
+{% if logs %}
+
+<div class="logs">
+{% for log in logs %}
+<p>✔ {{log}}</p>
+{% endfor %}
+</div>
+
+{% endif %}
+
+{% if show_graphs %}
+
+<!-- Graphs Container -->
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(500px,1fr));gap:25px;margin-bottom:25px;">
+
+<!-- Graph 1: Accuracy -->
+<div class="card">
+<h3>📈 Accuracy Over Epochs</h3>
+<p style="font-size:12px;color:#cbd5e1;margin-top:5px;">Shows how training and validation accuracy improve over each epoch</p>
+<img src="/static/accuracy.png?t={{ range(1, 1000000)|random }}" alt="Accuracy Chart" style="margin-top:15px;">
+</div>
+
+<!-- Graph 2: Loss -->
+<div class="card">
+<h3>📉 Loss Over Epochs</h3>
+<p style="font-size:12px;color:#cbd5e1;margin-top:5px;">Monitors training and validation loss to detect overfitting</p>
+<img src="/static/loss.png?t={{ range(1, 1000000)|random }}" alt="Loss Chart" style="margin-top:15px;">
+</div>
+
+<!-- Graph 3: Confusion Matrix -->
+<div class="card" style="grid-column:span 1;">
+<h3>🎯 Confusion Matrix</h3>
+<p style="font-size:12px;color:#cbd5e1;margin-top:5px;">Shows prediction accuracy per class - true vs predicted labels</p>
+<img src="/static/confusion_matrix.png?t={{ range(1, 1000000)|random }}" alt="Confusion Matrix" style="margin-top:15px;">
+</div>
+
+<!-- Graph 4: Per-Class Metrics -->
+<div class="card" style="grid-column:span 1;">
+<h3>📊 Per-Class Performance Metrics</h3>
+<p style="font-size:12px;color:#cbd5e1;margin-top:5px;">Compares Precision, Recall, and F1-Score for each disease class</p>
+<img src="/static/metrics.png?t={{ range(1, 1000000)|random }}" alt="Metrics Chart" style="margin-top:15px;">
+</div>
+
+<!-- Graph 5: Overall Statistics -->
+<div class="card">
+<h3>🏆 Overall Model Performance</h3>
+<p style="font-size:12px;color:#cbd5e1;margin-top:5px;">Summary statistics: Accuracy, Precision, Recall, and F1-Score</p>
+<img src="/static/overall_stats.png?t={{ range(1, 1000000)|random }}" alt="Overall Stats" style="margin-top:15px;">
+</div>
+
+<!-- Graph 6: Per-Class Accuracy -->
+<div class="card">
+<h3>✅ Per-Class Accuracy</h3>
+<p style="font-size:12px;color:#cbd5e1;margin-top:5px;">Accuracy percentage for each individual disease class</p>
+<img src="/static/class_accuracy.png?t={{ range(1, 1000000)|random }}" alt="Class Accuracy" style="margin-top:15px;">
+</div>
+
+</div>
+
+{% elif not logs %}
+
+<p class="center-text">⏳ No training results yet. Click below to start training.</p>
+
+<a href="/train?force=1">
+<button class="btn" style="background:linear-gradient(135deg,#3b82f6,#2563eb);">🧠 Start Training</button>
+</a>
+
+{% endif %}
+
+{% if already_trained %}
+<a href="/train?force=1">
+<button class="btn" style="background:linear-gradient(135deg,#f59e0b,#d97706);">🔄 Retrain Model</button>
+</a>
+{% endif %}
+
+<a href="/home">
+<button class="btn">⬅ Back to Dashboard</button>
+</a>
+
+</div>
+</div>
+
+</body>
+</html>

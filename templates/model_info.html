@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Model Information | Predictive Oncology</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+<style>
+body {
+    font-family: 'Poppins', sans-serif;
+    margin: 0;
+    background: linear-gradient(135deg, #0f172a, #1e3a8a, #06b6d4);
+    color: #e2e8f0;
+}
+
+/* Sidebar */
+.sidebar {
+    width: 260px;
+    background: rgba(0, 0, 0, 0.7);
+    padding: 30px;
+    position: fixed;
+    height: 100%;
+    backdrop-filter: blur(12px);
+}
+
+.sidebar .logo {
+    font-size: 22px;
+    text-align: center;
+    color: #22c55e;
+    margin-bottom: 40px;
+    font-weight: 700;
+}
+
+.sidebar a {
+    display: block;
+    padding: 14px;
+    margin-bottom: 15px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    text-decoration: none;
+    color: white;
+    transition: 0.3s;
+}
+
+.sidebar a:hover {
+    background: linear-gradient(135deg, #22c55e, #4ade80);
+    color: black;
+    transform: translateX(5px);
+}
+
+/* Main */
+.main {
+    margin-left: 260px;
+    width: 100%;
+    padding: 40px;
+}
+
+/* Container */
+.container {
+    max-width: 1000px;
+    margin: auto;
+}
+
+/* Header */
+h1 {
+    text-align: center;
+    color: #22c55e;
+    margin-bottom: 30px;
+    font-size: 32px;
+}
+
+/* Card */
+.card {
+    background: rgba(255, 255, 255, 0.08);
+    padding: 30px;
+    margin-bottom: 25px;
+    border-radius: 15px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(15px);
+}
+
+.card h2 {
+    color: #38bdf8;
+    margin-top: 0;
+    margin-bottom: 15px;
+    border-bottom: 2px solid rgba(56, 189, 248, 0.3);
+    padding-bottom: 10px;
+}
+
+.card h3 {
+    color: #22c55e;
+    margin-top: 20px;
+    margin-bottom: 10px;
+}
+
+p, li {
+    line-height: 1.7;
+    color: #cbd5e1;
+}
+
+ul, ol {
+    margin-left: 20px;
+    margin-bottom: 15px;
+}
+
+li {
+    margin-bottom: 8px;
+}
+
+/* Status Box */
+.status-box {
+    background: rgba(34, 197, 94, 0.1);
+    border-left: 4px solid #22c55e;
+    padding: 15px;
+    border-radius: 10px;
+    margin-bottom: 15px;
+}
+
+.status-box.warning {
+    background: rgba(239, 68, 68, 0.1);
+    border-left-color: #ef4444;
+}
+
+.status-box h4 {
+    color: #22c55e;
+    margin-top: 0;
+}
+
+.status-box.warning h4 {
+    color: #fca5a5;
+}
+
+/* Code block */
+.code-block {
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 15px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 10px 0;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    color: #86efac;
+}
+
+/* Grid */
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 15px;
+    margin: 15px 0;
+}
+
+.grid-item {
+    background: rgba(56, 189, 248, 0.1);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    padding: 15px;
+    border-radius: 10px;
+}
+
+.grid-item h4 {
+    color: #38bdf8;
+    margin-top: 0;
+}
+
+.grid-item p {
+    font-size: 14px;
+    margin: 0;
+}
+
+/* Badges */
+.badge {
+    display: inline-block;
+    background: rgba(34, 197, 94, 0.2);
+    color: #86efac;
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-right: 8px;
+    margin-bottom: 8px;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+    .sidebar {
+        display: none;
+    }
+    .main {
+        margin-left: 0;
+        padding: 20px;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+    <div class="logo">🧬 Oncology AI</div>
+    <a href="/home">🏠 Home</a>
+    <a href="/detection">🔬 Detection</a>
+    <a href="/train">🧠 Train Model</a>
+    <a href="/model_info">📋 Model Info</a>
+    <a href="/logout">🚪 Logout</a>
+</div>
+
+<!-- Main -->
+<div class="main">
+    <div class="container">
+        <h1>📋 Model Information</h1>
+
+        <!-- Model Status -->
+        <div class="card">
+            <h2>📊 Model Status</h2>
+            
+            {% if info and info.model_exists %}
+                <div class="status-box">
+                    <h4>✅ Model Status: TRAINED</h4>
+                    <p>The model is ready for cancer detection predictions.</p>
+                </div>
+                
+                {% if info.training_status and info.training_status[0] %}
+                    <p><strong>Last Trained:</strong> {{ info.training_status[1] }}</p>
+                    <p><strong>Available Cancer Classes:</strong></p>
+                    <div class="grid">
+                        {% for cancer_class in info.training_status[2].split(',') %}
+                            <div class="grid-item">
+                                <h4>{{ cancer_class }}</h4>
+                                <p>Trainable class</p>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            {% else %}
+                <div class="status-box warning">
+                    <h4>⚠️ Model Status: NOT TRAINED</h4>
+                    <p>The model needs to be trained before performing predictions. Visit the <a href="/train" style="color:#fca5a5;text-decoration:underline;">Train Model</a> page to train.</p>
+                </div>
+            {% endif %}
+        </div>
+
+        <!-- Model Architecture -->
+        <div class="card">
+            <h2>🏗️ Model Architecture</h2>
+            
+            <h3>Convolutional Neural Network (CNN)</h3>
+            <p>The current model uses a custom CNN architecture designed for medical image classification:</p>
+            
+            <div class="code-block">
+Conv2D(32, 3x3) + ReLU
+MaxPooling2D
+Conv2D(64, 3x3) + ReLU
+MaxPooling2D
+Flatten
+Dense(128) + ReLU
+Dense(N_classes) + Softmax
+            </div>
+
+            <h3>Model Specifications</h3>
+            <ul>
+                <li><strong>Input Size:</strong> 150×150×3 (RGB images)</li>
+                <li><strong>Optimizer:</strong> Adam</li>
+                <li><strong>Loss Function:</strong> Sparse Categorical Crossentropy</li>
+                <li><strong>Metric:</strong> Accuracy</li>
+                <li><strong>Training Epochs:</strong> 10</li>
+                <li><strong>Validation Split:</strong> 20%</li>
+            </ul>
+        </div>
+
+        <!-- Classes -->
+        <div class="card">
+            <h2>🩺 Supported Cancer Classes</h2>
+            
+            <h3>Breast Cancer (3 classes)</h3>
+            <ul>
+                <li><strong>Normal:</strong> Healthy breast tissue</li>
+                <li><strong>Benign:</strong> Non-cancerous tumor</li>
+                <li><strong>Malignant:</strong> Cancerous tumor</li>
+            </ul>
+
+            <h3>Liver Conditions (2 classes)</h3>
+            <ul>
+                <li><strong>Healthy:</strong> Normal liver</li>
+                <li><strong>Hepatic Steatosis:</strong> Fatty liver</li>
+            </ul>
+
+            <h3>Skin Conditions (3 classes)</h3>
+            <ul>
+                <li><strong>Healthy:</strong> Normal skin</li>
+                <li><strong>Dermatofibroma:</strong> Benign skin condition</li>
+                <li><strong>Seborrheic Keratosis:</strong> Non-cancerous skin growth</li>
+            </ul>
+        </div>
+
+        <!-- Training Data -->
+        <div class="card">
+            <h2>📚 Training & Testing Data</h2>
+            
+            <p>The model is trained on organized datasets with the following structure:</p>
+
+            <h3>Directory Structure</h3>
+            <div class="code-block">
+train/
+├── Breast Normal/
+├── Breast Benign/
+├── Breast Malignant/
+├── Healthy Liver/
+├── Liver Hepatic_Steatosis/
+├── Skin Dermatofibroma/
+├── Skin Healthy/
+└── Skin Seborrheic_Keratosis/
+
+test/
+└── (Same structure as train/)
+            </div>
+
+            <h3>Requirements</h3>
+            <ul>
+                <li>Images must be in PNG, JPG, JPEG, GIF, or BMP format</li>
+                <li>Each class should have multiple samples for better generalization</li>
+                <li>Training set should have more samples than test set (typically 80/20 split)</li>
+                <li>Images are automatically resized to 150×150 pixels</li>
+            </ul>
+        </div>
+
+        <!-- Performance Metrics -->
+        <div class="card">
+            <h2>📈 Performance Metrics</h2>
+            
+            {% if info and info.model_exists %}
+                <p>After training, the following visualizations are generated:</p>
+                
+                <h3>Available Metrics</h3>
+                <div class="grid">
+                    <div class="grid-item">
+                        <h4>📊 Accuracy Plot</h4>
+                        <p>Shows training and validation accuracy over epochs</p>
+                    </div>
+                    <div class="grid-item">
+                        <h4>🎯 Confusion Matrix</h4>
+                        <p>Displays prediction accuracy per class</p>
+                    </div>
+                </div>
+
+                <p style="margin-top:20px;">
+                    <a href="/train" style="color:#38bdf8;text-decoration:underline;">View detailed training results →</a>
+                </p>
+            {% else %}
+                <p>Train the model to generate performance metrics and visualizations.</p>
+            {% endif %}
+        </div>
+
+        <!-- How to Use -->
+        <div class="card">
+            <h2>🚀 How to Use</h2>
+            
+            <h3>Step 1: Train the Model</h3>
+            <ol>
+                <li>Prepare training and test data in the required directory structure</li>
+                <li>Navigate to the <a href="/train" style="color:#38bdf8;text-decoration:underline;">Train Model</a> page</li>
+                <li>The training process will automatically load all available classes</li>
+                <li>Wait for training to complete</li>
+            </ol>
+
+            <h3>Step 2: Make Predictions</h3>
+            <ol>
+                <li>Go to the <a href="/detection" style="color:#38bdf8;text-decoration:underline;">Detection</a> page</li>
+                <li>Upload a medical image</li>
+                <li>The model will analyze the image and provide prediction</li>
+                <li>View the classification result and recommendation</li>
+            </ol>
+
+            <h3>Step 3: Review Results</h3>
+            <ul>
+                <li>Check performance metrics and visualizations</li>
+                <li>Retrain with better data if needed</li>
+                <li>Monitor prediction accuracy</li>
+            </ul>
+        </div>
+
+        <!-- Disclaimer -->
+        <div class="card">
+            <h2>⚠️ Important Disclaimer</h2>
+            
+            <p style="background:rgba(239,68,68,0.1);border-left:4px solid #ef4444;padding:15px;border-radius:10px;">
+                <strong>This AI system is designed for research and educational purposes only.</strong>
+                <br><br>
+                The predictions made by this model are NOT a substitute for professional medical diagnosis. 
+                Always consult qualified healthcare professionals and licensed oncologists for actual medical diagnosis 
+                and treatment decisions. Do not rely solely on this system for clinical decision-making.
+                <br><br>
+                The model's accuracy depends on training data quality and may have limitations with real-world edge cases.
+            </p>
+        </div>
+
+    </div>
+</div>
+
+</body>
+</html>
+}
+</style>
+</head>
+
+<body>
+
+<header>
+    <h1>🧬 Predictive Oncology</h1>
+    <p>Deep Learning-Based Multi-Cancer Detection System</p>
+</header>
+
+<div class="container">
+
+<!-- INTRO -->
+<div class="card">
+    <h2>📌 Introduction</h2>
+    <p>
+        Predictive Oncology focuses on using artificial intelligence and deep learning 
+        techniques to detect cancer at an early stage. Early detection significantly 
+        improves treatment success and survival rates.
+    </p>
+    <p>
+        This system analyzes medical images using advanced deep learning models to classify 
+        multiple cancer types including <b>Breast, Liver, and Skin cancers</b>. 
+        It helps doctors and researchers make faster and more accurate decisions.
+    </p>
+</div>
+
+<!-- OBJECTIVE -->
+<div class="card">
+    <h2>🎯 Objectives</h2>
+    <ul>
+        <li>Detect multiple cancer types using deep learning</li>
+        <li>Classify images into normal, benign, and malignant categories</li>
+        <li>Assist early diagnosis and reduce medical errors</li>
+        <li>Provide automated and fast predictions</li>
+        <li>Support healthcare professionals in decision making</li>
+    </ul>
+</div>
+
+<!-- MODELS -->
+<div class="card">
+    <h2>🧠 Deep Learning Models</h2>
+
+    <h3>CNN <span class="badge">Custom Model</span></h3>
+    <p>
+        Convolutional Neural Networks automatically extract important features 
+        such as texture, shape, and patterns from medical images. 
+        It is widely used for medical image classification.
+    </p>
+
+    <h3>VGG16 <span class="badge">Transfer Learning</span></h3>
+    <p>
+        VGG16 is a pre-trained deep learning model that helps extract high-level 
+        features efficiently. It improves accuracy even with limited medical datasets.
+    </p>
+
+    <h3>ResNet50 <span class="badge">Deep Architecture</span></h3>
+    <p>
+        ResNet50 uses residual connections to allow very deep networks. 
+        It avoids vanishing gradient problems and performs well on complex medical data.
+    </p>
+</div>
+
+<!-- WORKFLOW -->
+<div class="card">
+    <h2>⚙️ System Workflow</h2>
+    <ul>
+        <li>Upload medical image (Breast, Liver, or Skin)</li>
+        <li>Resize image to 150×150 pixels</li>
+        <li>Normalize pixel values</li>
+        <li>Extract features using deep learning models</li>
+        <li>Classify into cancer type</li>
+        <li>Display prediction with medical suggestion</li>
+    </ul>
+</div>
+
+<!-- CLASSES -->
+<div class="card">
+    <h2>🧬 Cancer Categories</h2>
+    <div class="grid">
+        <div>🩺 Breast Normal</div>
+        <div>⚠️ Breast Benign</div>
+        <div>🔴 Breast Malignant</div>
+        <div>🟢 Healthy Liver</div>
+        <div>🟡 Liver Hepatic Steatosis</div>
+        <div>🧴 Skin Healthy</div>
+        <div>⚠️ Skin Dermatofibroma</div>
+        <div>🔴 Skin Seborrheic Keratosis</div>
+    </div>
+</div>
+
+<!-- GRAPHS -->
+<div class="card">
+    <h2>📊 Training Results</h2>
+
+    <h3>VGG16 Performance</h3>
+    <img src="/static/vgg_acc.png">
+    <img src="/static/vgg_loss.png">
+
+    <h3>ResNet50 Performance</h3>
+    <img src="/static/resnet_acc.png">
+    <img src="/static/resnet_loss.png">
+
+    <h3>CNN Performance</h3>
+    <img src="/static/cnn_acc.png">
+    <img src="/static/cnn_loss.png">
+
+    <h3>Confusion Matrix</h3>
+    <img src="/static/confusion_matrix.png">
+</div>
+
+<!-- ADVANTAGES -->
+<div class="card">
+    <h2>🚀 Advantages</h2>
+    <ul>
+        <li>High accuracy cancer detection</li>
+        <li>Early diagnosis support</li>
+        <li>Automated medical analysis</li>
+        <li>Reduces human error</li>
+        <li>Fast and scalable system</li>
+    </ul>
+</div>
+
+<!-- APPLICATIONS -->
+<div class="card">
+    <h2>🏥 Applications</h2>
+    <ul>
+        <li>Hospitals and diagnostic centers</li>
+        <li>Medical research and analysis</li>
+        <li>Cancer screening programs</li>
+        <li>AI-assisted diagnosis systems</li>
+        <li>Telemedicine platforms</li>
+    </ul>
+</div>
+
+<!-- CONCLUSION -->
+<div class="card">
+    <h2>📌 Conclusion</h2>
+    <p>
+        Predictive Oncology using deep learning enables accurate and early cancer detection. 
+        By leveraging models like CNN, VGG16, and ResNet50, this system provides reliable 
+        classification of multiple cancer types.
+    </p>
+    <p>
+        This technology has the potential to transform healthcare by assisting doctors, 
+        improving diagnosis speed, and ultimately saving lives.
+    </p>
+</div>
+
+</div>
+
+<footer>
+⚠ For educational and research purposes only. Always consult medical professionals.
+</footer>
+
+</body>
+</html>

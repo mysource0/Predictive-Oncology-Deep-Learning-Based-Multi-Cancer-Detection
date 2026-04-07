@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  web:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./train:/app/train:ro
+      - ./test:/app/test:ro
+      - uploads_data:/app/static/uploads
+    environment:
+      - SECRET_KEY=your-secure-secret-key-change-this
+      - FLASK_ENV=production
+    restart: unless-stopped
+
+volumes:
+  uploads_data:
