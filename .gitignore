@@ -35,11 +35,11 @@ eggs/
 
 # Project specific — auto-generated, do NOT commit
 model.h5
-users.db
+
 
 # Exclude large data folders
-train/
-test/
+train/*.png
+test/*.png
 
 # Generated graphs
 static/accuracy.png
