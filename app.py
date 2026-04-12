@@ -3,6 +3,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.preprocessing import image
 import os
+import json
 import sqlite3
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -12,10 +13,17 @@ from sklearn.metrics import confusion_matrix, classification_report, precision_s
 import seaborn as sns
 from datetime import datetime
 from dotenv import load_dotenv
+import google.generativeai as genai
+from PIL import Image as PILImage
 
 from tensorflow.keras import layers, models
 
 load_dotenv()
+
+# Configure Gemini API
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
@@ -58,6 +66,99 @@ def get_suggestion(class_name):
     """Get medical suggestion using case/space-insensitive matching"""
     normalized = ' '.join(class_name.lower().split())
     return _SUGGESTIONS.get(normalized, "Consult doctor for further diagnosis.")
+
+
+def gemini_validate_and_analyze(image_path, cnn_prediction=None, cnn_confidence=None):
+    """Use Gemini Pro Vision API to validate the image and provide a second opinion.
+    
+    Returns a dict with:
+        - is_medical: bool
+        - rejection_reason: str
+        - gemini_diagnosis: str
+        - gemini_agrees: bool
+        - gemini_confidence: int (0-100)
+        - severity: str
+        - gemini_suggestion: str
+        - error: str
+    """
+    if not GEMINI_API_KEY:
+        return {'error': 'Gemini API key not configured', 'is_medical': True}
+    
+    try:
+        model = genai.GenerativeModel('gemini-2.5-pro')
+        img = PILImage.open(image_path)
+        
+        cnn_info = ""
+        if cnn_prediction and cnn_confidence:
+            cnn_info = f'\nThe CNN model predicted: "{cnn_prediction}" with {cnn_confidence:.1f}% confidence.'
+        
+        prompt = f"""You are an expert medical image analysis AI assistant integrated into a cancer detection system.
+
+SUPPORTED CONDITIONS:
+- Breast: Normal, Benign tumor, Malignant tumor (from ultrasound/histopathology images)
+- Liver: Healthy, Hepatic Steatosis / Fatty Liver (from CT/ultrasound scans)
+- Skin: Healthy, Dermatofibroma, Seborrheic Keratosis (from dermoscopy/clinical photos)
+
+STEP 1 — IMAGE VALIDATION:
+Determine if this is a valid medical image (ultrasound, histopathology slide, CT scan, MRI, dermoscopy, clinical photo of skin lesion, etc.).
+Non-medical images include: everyday objects, food, animals, selfies, screenshots, landscapes, etc.
+
+STEP 2 — MEDICAL ANALYSIS (only if valid):
+Provide your expert diagnosis with reasoning.
+{cnn_info}
+
+Respond ONLY in valid JSON (no markdown, no backticks, no extra text):
+{{
+  "is_medical_image": true,
+  "rejection_reason": "",
+  "image_type": "e.g., breast ultrasound, skin dermoscopy, liver CT scan",
+  "organ_detected": "breast / liver / skin / unknown",
+  "gemini_diagnosis": "detailed diagnosis with reasoning",
+  "detected_condition": "exact condition name from supported list",
+  "gemini_confidence": 85,
+  "severity": "normal / low / moderate / high / critical",
+  "cnn_agrees": true,
+  "analysis_notes": "clinical observations, patterns noticed, why CNN may be right or wrong",
+  "recommendation": "specific medical recommendation based on findings"
+}}
+
+RULES:
+- gemini_confidence must be an integer 0-100
+- If NOT a medical image, set is_medical_image to false, gemini_confidence to 0, and explain clearly in rejection_reason
+- Be thorough in analysis_notes — mention specific visual patterns you observe
+- For severity: normal=healthy tissue, low=benign/non-concerning, moderate=needs monitoring, high=likely malignant, critical=urgent"""
+        
+        response = model.generate_content([prompt, img])
+        
+        response_text = response.text.strip()
+        if response_text.startswith('```'):
+            response_text = response_text.split('\n', 1)[1]
+            response_text = response_text.rsplit('```', 1)[0].strip()
+        
+        result = json.loads(response_text)
+        
+        return {
+            'is_medical': result.get('is_medical_image', True),
+            'rejection_reason': result.get('rejection_reason', ''),
+            'image_type': result.get('image_type', 'Unknown'),
+            'organ_detected': result.get('organ_detected', 'Unknown'),
+            'gemini_diagnosis': result.get('gemini_diagnosis', 'N/A'),
+            'detected_condition': result.get('detected_condition', 'N/A'),
+            'confidence_level': result.get('confidence_level', 'low'),
+            'gemini_confidence': result.get('gemini_confidence', 0),
+            'severity': result.get('severity', 'unknown'),
+            'gemini_agrees': result.get('cnn_agrees', False),
+            'analysis_notes': result.get('analysis_notes', ''),
+            'gemini_suggestion': result.get('recommendation', 'Consult a medical professional.'),
+            'error': None
+        }
+    
+    except json.JSONDecodeError as e:
+        print(f"Gemini JSON parse error: {e}")
+        return {'error': 'Failed to parse Gemini response', 'is_medical': True}
+    except Exception as e:
+        print(f"Gemini API error: {e}")
+        return {'error': f'Gemini API error: {str(e)}', 'is_medical': True}
 
 
 def init_db():
@@ -105,7 +206,7 @@ def get_training_status():
     try:
         conn = sqlite3.connect('users.db')
         cursor = conn.cursor()
-        cursor.execute("SELECT is_trained, available_classes FROM training_status WHERE id = 1")
+        cursor.execute("SELECT is_trained, trained_at, available_classes FROM training_status WHERE id = 1")
         result = cursor.fetchone()
         conn.close()
         return result
@@ -211,6 +312,8 @@ def detection():
     suggestion = None
     image_path = None
     error_msg = None
+    gemini_result = None
+    confidence = None
 
     try:
         model = get_model()
@@ -220,7 +323,9 @@ def detection():
                                    predicted_class=None,
                                    suggestion=None,
                                    image_path=None,
-                                   error=error_msg)
+                                   error=error_msg,
+                                   confidence=None,
+                                   gemini=None)
 
         if request.method == 'POST':
             if 'image' not in request.files:
@@ -241,44 +346,99 @@ def detection():
 
                         filename = secure_filename(f"{timestamp}_{file.filename}")
                         image_path = os.path.join(user_folder, filename)
-                        file.save(image_path)
-
-                        img = image.load_img(image_path, target_size=(150, 150))
-                        img = image.img_to_array(img) / 255.0
-                        img = np.expand_dims(img, axis=0)
-
-                        pred = model.predict(img)
-                        label = np.argmax(pred)
-                        confidence = float(np.max(pred)) * 100
-
-                        # Get available classes from database
-                        training_status = get_training_status()
-                        if training_status and training_status[1]:
-                            available_classes = training_status[1].split(',')
+                        
+                        # Validate file size before saving
+                        if len(file.stream.read()) > MAX_FILE_SIZE:
+                            file.stream.seek(0)
+                            error_msg = f"File too large. Maximum size: {MAX_FILE_SIZE / (1024*1024):.0f}MB"
                         else:
-                            available_classes = discover_classes()
+                            file.stream.seek(0)
+                            file.save(image_path)
 
-                        if 0 <= label < len(available_classes):
-                            predicted_class = available_classes[label]
-                            suggestion = get_suggestion(predicted_class)
-                        else:
-                            error_msg = "Error: Invalid prediction index"
+                            # Load and process image
+                            try:
+                                img = image.load_img(image_path, target_size=(150, 150))
+                                img = image.img_to_array(img) / 255.0
+                                img = np.expand_dims(img, axis=0)
+                            except Exception as e:
+                                error_msg = f"Error loading image: {str(e)}"
+                                os.remove(image_path) if os.path.exists(image_path) else None
+                                return render_template("detection.html",
+                                                       predicted_class=None,
+                                                       suggestion=None,
+                                                       image_path=None,
+                                                       error=error_msg,
+                                                       confidence=None,
+                                                       gemini=None)
 
-                        # Return relative path for frontend
-                        image_path = image_path.replace('\\', '/').replace(UPLOAD_FOLDER, '/static/uploads')
+                            # Make prediction
+                            try:
+                                pred = model.predict(img, verbose=0)
+                                label = np.argmax(pred)
+                                confidence = float(np.max(pred)) * 100
+                            except Exception as e:
+                                error_msg = f"Error during prediction: {str(e)}"
+                                return render_template("detection.html",
+                                                       predicted_class=None,
+                                                       suggestion=None,
+                                                       image_path=None,
+                                                       error=error_msg,
+                                                       confidence=None,
+                                                       gemini=None)
+
+                            # Get available classes from database
+                            training_status = get_training_status()
+                            if training_status and training_status[2]:
+                                available_classes = training_status[2].split(',')
+                            else:
+                                available_classes = discover_classes()
+
+                            if 0 <= label < len(available_classes):
+                                predicted_class = available_classes[label]
+                                suggestion = get_suggestion(predicted_class)
+                            else:
+                                error_msg = "Error: Invalid prediction index"
+
+                            # --- Gemini AI Validation & Second Opinion ---
+                            try:
+                                gemini_result = gemini_validate_and_analyze(
+                                    image_path, predicted_class, confidence
+                                )
+
+                                if gemini_result.get('is_medical') is False:
+                                    # Image is NOT medical — reject the CNN prediction
+                                    predicted_class = None
+                                    suggestion = None
+                                    confidence = None
+                                    error_msg = (
+                                        f"⚠️ This does not appear to be a medical image. "
+                                        f"Detected: {gemini_result.get('image_type', 'non-medical image')}. "
+                                        f"{gemini_result.get('rejection_reason', 'Please upload a breast, liver, or skin medical image.')}"
+                                    )
+                                    gemini_result = None  # Don't show AI analysis for non-medical
+                            except Exception as e:
+                                print(f"Gemini validation error: {str(e)}")
+                                # Continue without Gemini validation if it fails
+                                gemini_result = {'error': 'AI validation unavailable'}
+
+                            # Return relative path for frontend
+                            image_path = image_path.replace('\\', '/').replace(UPLOAD_FOLDER, '/static/uploads')
 
                     except Exception as e:
                         error_msg = f"Error processing image: {str(e)}"
+                        print(f"Image processing error: {str(e)}")
 
     except Exception as e:
         error_msg = f"Detection error: {str(e)}"
+        print(f"Detection route error: {str(e)}")
 
     return render_template("detection.html",
                            predicted_class=predicted_class,
                            suggestion=suggestion,
                            image_path=image_path,
                            error=error_msg,
-                           confidence=locals().get('confidence'))
+                           confidence=confidence,
+                           gemini=gemini_result)
 
 
 
@@ -388,6 +548,7 @@ def train():
             layers.MaxPooling2D(),
             layers.Flatten(),
             layers.Dense(128, activation='relu'),
+            layers.Dropout(0.3),
             layers.Dense(len(available_classes), activation='softmax')
         ])
 
@@ -396,22 +557,38 @@ def train():
                       metrics=['accuracy'])
 
         logs.append("Training model (10 epochs)...")
-        history = model.fit(train_images, train_labels,
-                            epochs=10,
-                            validation_split=0.2,
-                            verbose=0)
+        try:
+            history = model.fit(train_images, train_labels,
+                                epochs=10,
+                                batch_size=32,
+                                validation_split=0.2,
+                                verbose=0)
+        except Exception as e:
+            logs.append(f"ERROR during model training: {str(e)}")
+            _training_in_progress = False
+            return render_template("train.html", logs=logs)
 
         logs.append("Saving model...")
-        model.save("model.h5")
-        with open("model.json", "w") as f:
-            f.write(model.to_json())
+        try:
+            model.save("model.h5")
+            with open("model.json", "w") as f:
+                f.write(model.to_json())
+        except Exception as e:
+            logs.append(f"ERROR saving model: {str(e)}")
+            _training_in_progress = False
+            return render_template("train.html", logs=logs)
 
         # Clear cached model so it reloads
         _model_cache = None
 
         # Get predictions
-        preds = model.predict(test_images)
-        y_pred = np.argmax(preds, axis=1)
+        try:
+            preds = model.predict(test_images, verbose=0)
+            y_pred = np.argmax(preds, axis=1)
+        except Exception as e:
+            logs.append(f"ERROR during prediction: {str(e)}")
+            _training_in_progress = False
+            return render_template("train.html", logs=logs)
 
         logs.append("Generating detailed training graphs...")
 
@@ -576,4 +753,4 @@ def too_large(e):
 
 
 if __name__ == '__main__':
-    app.run(debug=False)
+    app.run(debug=False, threaded=True)

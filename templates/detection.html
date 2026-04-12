@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Cancer Detection | Predictive Oncology</title>
 
-<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
 <style>
 * {
@@ -15,7 +15,6 @@
     font-family: "Poppins", sans-serif;
 }
 
-/* Background */
 body {
     display: flex;
     min-height: 100vh;
@@ -31,6 +30,7 @@ body {
     position: fixed;
     height: 100%;
     backdrop-filter: blur(12px);
+    z-index: 10;
 }
 
 .sidebar .logo {
@@ -65,9 +65,8 @@ body {
     padding: 40px;
 }
 
-/* Container */
 .container {
-    max-width: 900px;
+    max-width: 950px;
     margin: auto;
 }
 
@@ -80,7 +79,6 @@ body {
     box-shadow: 0 30px 60px rgba(0, 0, 0, 0.6);
 }
 
-/* Title */
 h2 {
     text-align: center;
     margin-bottom: 25px;
@@ -88,12 +86,13 @@ h2 {
     font-size: 28px;
 }
 
-/* Alert messages */
+/* Alerts */
 .alert {
     padding: 15px 20px;
     border-radius: 10px;
     margin-bottom: 20px;
     font-weight: 500;
+    animation: slideIn 0.4s ease;
 }
 
 .alert-success {
@@ -103,12 +102,18 @@ h2 {
 }
 
 .alert-error {
-    background: rgba(239, 68, 68, 0.2);
+    background: rgba(239, 68, 68, 0.15);
     color: #fca5a5;
     border-left: 4px solid #ef4444;
 }
 
-/* Form styles */
+.alert-warning {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fcd34d;
+    border-left: 4px solid #f59e0b;
+}
+
+/* Form */
 .form-group {
     margin-bottom: 20px;
 }
@@ -120,27 +125,71 @@ h2 {
     font-weight: 600;
 }
 
-.form-group input[type="file"] {
-    display: block;
-    width: 100%;
-    padding: 15px;
-    border: 2px dashed rgba(255, 255, 255, 0.3);
-    border-radius: 10px;
-    background: rgba(255, 255, 255, 0.05);
-    color: white;
+.upload-area {
+    position: relative;
+    border: 2px dashed rgba(255, 255, 255, 0.25);
+    border-radius: 15px;
+    padding: 40px 20px;
+    text-align: center;
+    background: rgba(255, 255, 255, 0.03);
     cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    min-height: 160px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.upload-area:hover {
+    border-color: #38bdf8;
+    background: rgba(56, 189, 248, 0.08);
+    transform: scale(1.01);
+}
+
+.upload-area.has-file {
+    border-color: #22c55e;
+    background: rgba(34, 197, 94, 0.08);
+}
+
+.upload-area input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+}
+
+.upload-icon {
+    font-size: 48px;
+    margin-bottom: 10px;
+}
+
+.upload-text {
+    color: #94a3b8;
     font-size: 14px;
 }
 
-.form-group input[type="file"]:hover {
-    border-color: #38bdf8;
-    background: rgba(56, 189, 248, 0.1);
+.upload-text strong {
+    color: #38bdf8;
 }
 
-.file-info {
-    font-size: 12px;
-    color: #cbd5e1;
-    margin-top: 8px;
+.file-name {
+    margin-top: 10px;
+    color: #22c55e;
+    font-weight: 600;
+    font-size: 14px;
+    display: none;
+}
+
+.preview-img {
+    max-width: 200px;
+    max-height: 150px;
+    margin-top: 15px;
+    border-radius: 10px;
+    display: none;
+    box-shadow: 0 5px 20px rgba(0,0,0,0.4);
 }
 
 /* Button */
@@ -149,117 +198,671 @@ h2 {
     width: 100%;
     padding: 14px;
     margin-top: 10px;
-    background: linear-gradient(135deg, #22c55e, #16a34a);
+    background: linear-gradient(135deg, #22c55e, #16a34a, #0ea5e9, #22c55e);
+    background-size: 300% 300%;
     color: white;
     border: none;
     border-radius: 25px;
     cursor: pointer;
     font-weight: 600;
     font-size: 16px;
-    transition: 0.3s;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+    animation: gradientShift 4s ease infinite;
+    box-shadow: 0 4px 15px rgba(34, 197, 94, 0.3);
 }
 
-.btn:hover {
-    transform: scale(1.02);
-    box-shadow: 0 10px 25px rgba(34, 197, 94, 0.5);
+@keyframes gradientShift {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+
+.btn:hover:not(:disabled) {
+    transform: scale(1.03) translateY(-3px);
+    box-shadow: 0 12px 30px rgba(34, 197, 94, 0.5);
+}
+
+.btn:active:not(:disabled) {
+    transform: scale(0.98);
 }
 
 .btn:disabled {
-    opacity: 0.5;
+    opacity: 0.7;
     cursor: not-allowed;
+    animation: none;
 }
 
-.btn-secondary {
-    background: rgba(56, 189, 248, 0.2);
-    color: #38bdf8;
-    margin-top: 0;
+/* Loading Overlay */
+.loading-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.95);
+    backdrop-filter: blur(12px);
+    z-index: 9999;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+    animation: fadeInOverlay 0.4s ease;
 }
 
-.btn-secondary:hover {
-    background: rgba(56, 189, 248, 0.3);
+@keyframes fadeInOverlay {
+    from {
+        opacity: 0;
+        backdrop-filter: blur(0px);
+    }
+    to {
+        opacity: 1;
+        backdrop-filter: blur(12px);
+    }
 }
 
-/* Results section */
+.loading-overlay.active {
+    display: flex;
+}
+
+.loader-container {
+    text-align: center;
+    animation: slideInUp 0.6s ease 0.2s backwards;
+}
+
+@keyframes slideInUp {
+    from {
+        opacity: 0;
+        transform: translateY(30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Advanced DNA Helix Loader */
+.dna-loader {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 40px;
+    perspective: 1000px;
+}
+
+.dna-loader .dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    animation: dnaHelix 2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+    transition: all 0.3s ease;
+}
+
+.dna-loader .dot:nth-child(1) { background: #22c55e; animation-delay: 0s; }
+.dna-loader .dot:nth-child(2) { background: #38bdf8; animation-delay: 0.12s; }
+.dna-loader .dot:nth-child(3) { background: #8b5cf6; animation-delay: 0.24s; }
+.dna-loader .dot:nth-child(4) { background: #f59e0b; animation-delay: 0.36s; }
+.dna-loader .dot:nth-child(5) { background: #ef4444; animation-delay: 0.48s; }
+.dna-loader .dot:nth-child(6) { background: #22c55e; animation-delay: 0.6s; }
+.dna-loader .dot:nth-child(7) { background: #38bdf8; animation-delay: 0.72s; }
+
+@keyframes dnaHelix {
+    0% {
+        transform: translateY(0) scale(0.8);
+        opacity: 0.4;
+        filter: blur(0.5px);
+    }
+    35% {
+        transform: translateY(-30px) scale(1.15);
+        opacity: 1;
+        filter: blur(0);
+    }
+    50% {
+        transform: translateY(-38px) scale(1.2);
+        opacity: 1;
+        filter: blur(0);
+    }
+    65% {
+        transform: translateY(-30px) scale(1.15);
+        opacity: 1;
+        filter: blur(0);
+    }
+    100% {
+        transform: translateY(0) scale(0.8);
+        opacity: 0.4;
+        filter: blur(0.5px);
+    }
+}
+
+.loading-text {
+    color: #e2e8f0;
+    font-size: 22px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    letter-spacing: 0.5px;
+    animation: fadeInText 0.8s ease 0.3s backwards;
+}
+
+@keyframes fadeInText {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.loading-subtext {
+    color: #94a3b8;
+    font-size: 14px;
+    margin-bottom: 20px;
+    animation: fadeInText 0.8s ease 0.4s backwards;
+}
+
+.loading-step {
+    margin-top: 12px;
+    padding: 14px 28px;
+    background: rgba(56, 189, 248, 0.15);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    border-radius: 12px;
+    font-size: 14px;
+    color: #7dd3fc;
+    font-weight: 500;
+    animation: slidePulse 2s ease-in-out infinite, fadeInText 0.8s ease 0.5s backwards;
+    min-width: 300px;
+}
+
+@keyframes slidePulse {
+    0%, 100% {
+        box-shadow: 0 0 0 rgba(56, 189, 248, 0.4);
+        opacity: 0.8;
+    }
+    50% {
+        box-shadow: 0 0 20px rgba(56, 189, 248, 0.3);
+        opacity: 1;
+    }
+}
+
+/* Progress indicator */
+.progress-dots {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin-top: 20px;
+    opacity: 0;
+    animation: fadeInText 0.8s ease 0.6s forwards;
+}
+
+.progress-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.3);
+    animation: progressBounce 1.4s ease infinite;
+}
+
+.progress-dot:nth-child(1) { animation-delay: 0s; }
+.progress-dot:nth-child(2) { animation-delay: 0.3s; }
+.progress-dot:nth-child(3) { animation-delay: 0.6s; }
+
+@keyframes progressBounce {
+    0%, 100% {
+        background: rgba(255, 255, 255, 0.3);
+        transform: scale(1);
+    }
+    50% {
+        background: #38bdf8;
+        transform: scale(1.4);
+    }
+}
+
+/* Results */
 .results-section {
     margin-top: 40px;
-    padding-top: 40px;
+    padding-top: 30px;
     border-top: 2px solid rgba(255, 255, 255, 0.1);
+    animation: fadeUp 0.6s ease;
+}
+
+@keyframes fadeUp {
+    from { opacity: 0; transform: translateY(30px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideIn {
+    from { opacity: 0; transform: translateX(-20px); }
+    to { opacity: 1; transform: translateX(0); }
 }
 
 .result-card {
-    background: rgba(0, 0, 0, 0.45);
+    background: rgba(0, 0, 0, 0.4);
     padding: 25px;
     border-radius: 15px;
     margin-bottom: 20px;
-    text-align: center;
     transition: 0.3s;
+    animation: fadeUp 0.5s ease;
 }
 
 .result-card:hover {
-    transform: scale(1.02);
+    transform: translateY(-3px);
+    box-shadow: 0 15px 40px rgba(0,0,0,0.4);
 }
 
 .result-card h3 {
     color: #38bdf8;
     margin-bottom: 15px;
     font-size: 20px;
+    text-align: center;
 }
 
 .result-image {
     width: 100%;
-    max-width: 400px;
+    max-width: 380px;
     margin: 15px auto;
-    border-radius: 10px;
+    display: block;
+    border-radius: 12px;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+    animation: floatImg 6s ease-in-out infinite;
 }
 
-.prediction {
-    background: rgba(34, 197, 94, 0.1);
-    border: 2px solid #22c55e;
+@keyframes floatImg {
+    0% { transform: translateY(0px); }
+    50% { transform: translateY(-8px); }
+    100% { transform: translateY(0px); }
+}
+
+/* Prediction box */
+.prediction-box {
+    background: rgba(34, 197, 94, 0.08);
+    border: 2px solid rgba(34, 197, 94, 0.3);
     padding: 20px;
-    border-radius: 10px;
-    margin-bottom: 15px;
+    border-radius: 12px;
+    margin: 15px 0;
+    text-align: center;
 }
 
-.prediction h4 {
+.prediction-box h4 {
     color: #22c55e;
-    margin-bottom: 10px;
     font-size: 18px;
+    margin-bottom: 10px;
 }
 
-.prediction p {
-    font-size: 16px;
+.confidence-bar {
+    background: rgba(255,255,255,0.1);
+    border-radius: 10px;
+    height: 10px;
+    margin: 12px 0 6px;
+    overflow: hidden;
+    max-width: 400px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.confidence-fill {
+    height: 100%;
+    border-radius: 10px;
+    transition: width 1s ease;
+    background: linear-gradient(90deg, #22c55e, #4ade80);
+}
+
+.confidence-label {
+    font-size: 14px;
+    color: #86efac;
+    font-weight: 600;
+}
+
+.suggestion-box {
+    background: rgba(56, 189, 248, 0.08);
+    border-left: 4px solid #38bdf8;
+    padding: 15px 20px;
+    border-radius: 0 10px 10px 0;
+    margin-top: 15px;
+    color: #cbd5e1;
     line-height: 1.6;
-    color: #e2e8f0;
-}
-
-.confidence {
-    display: inline-block;
-    background: rgba(56, 189, 248, 0.2);
-    color: #38bdf8;
-    padding: 5px 12px;
-    border-radius: 20px;
-    margin-top: 10px;
     font-size: 14px;
 }
 
-.suggestion {
-    background: rgba(56, 189, 248, 0.1);
-    border-left: 4px solid #38bdf8;
-    padding: 15px;
-    border-radius: 5px;
+/* Gemini Card */
+.gemini-card {
+    background: rgba(139, 92, 246, 0.06);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    border-left: 4px solid #8b5cf6;
+    padding: 25px;
+    border-radius: 15px;
+    margin-bottom: 20px;
+    animation: fadeUp 0.7s ease;
+}
+
+.gemini-card h3 {
+    color: #a78bfa;
+    text-align: center;
+}
+
+.gemini-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
     margin-top: 15px;
+}
+
+.gemini-item {
+    background: rgba(139, 92, 246, 0.08);
+    padding: 14px;
+    border-radius: 10px;
+    animation: fadeUp 0.5s ease backwards;
+}
+
+.gemini-item:nth-child(1) { animation-delay: 0.1s; }
+.gemini-item:nth-child(2) { animation-delay: 0.2s; }
+.gemini-item:nth-child(3) { animation-delay: 0.3s; }
+.gemini-item:nth-child(4) { animation-delay: 0.4s; }
+
+.gemini-item:hover {
+    background: rgba(139, 92, 246, 0.15);
+    transform: translateY(-2px);
+    transition: 0.3s;
+}
+
+.gemini-item strong {
+    color: #a78bfa;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: block;
+    margin-bottom: 6px;
+}
+
+.gemini-item p {
+    color: #e2e8f0;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.badge-row {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 15px;
+}
+
+.badge {
+    padding: 5px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.badge-agree { background: rgba(34,197,94,0.2); color: #86efac; }
+.badge-disagree { background: rgba(239,68,68,0.2); color: #fca5a5; }
+.badge-info { background: rgba(56,189,248,0.15); color: #7dd3fc; }
+.badge-severity-normal { background: rgba(34,197,94,0.15); color: #86efac; }
+.badge-severity-low { background: rgba(34,197,94,0.15); color: #86efac; }
+.badge-severity-moderate { background: rgba(245,158,11,0.15); color: #fcd34d; }
+.badge-severity-high { background: rgba(239,68,68,0.15); color: #fca5a5; }
+.badge-severity-critical { background: rgba(239,68,68,0.25); color: #fca5a5; border: 1px solid rgba(239,68,68,0.4); }
+
+.gemini-confidence-bar {
+    background: rgba(255,255,255,0.1);
+    border-radius: 10px;
+    height: 8px;
+    margin: 10px auto 4px;
+    overflow: hidden;
+    max-width: 300px;
+}
+
+.gemini-confidence-fill {
+    height: 100%;
+    border-radius: 10px;
+    transition: width 1.2s ease;
+    background: linear-gradient(90deg, #8b5cf6, #a78bfa);
+}
+
+.notes-box {
+    background: rgba(255,255,255,0.04);
+    padding: 12px 15px;
+    border-radius: 8px;
+    border-left: 3px solid #a78bfa;
+    margin-top: 12px;
+    text-align: left;
+    transition: 0.3s;
+    animation: fadeUp 0.6s ease backwards;
+    animation-delay: 0.5s;
+}
+
+.notes-box:hover {
+    background: rgba(255,255,255,0.08);
+}
+
+.ai-recommendation-box {
+    background: rgba(139, 92, 246, 0.06);
+    border-left-color: #8b5cf6;
+    animation: glowPulse 3s infinite alternate, fadeUp 0.6s ease backwards;
+    animation-delay: 0s, 0.6s;
+}
+
+@keyframes glowPulse {
+    from { box-shadow: 0 0 5px rgba(139, 92, 246, 0.1); }
+    to { box-shadow: 0 0 15px rgba(139, 92, 246, 0.3); }
+}
+
+.notes-box strong {
+    color: #a78bfa;
+    font-size: 12px;
+}
+
+.notes-box p {
     color: #cbd5e1;
+    font-size: 13px;
+    margin-top: 4px;
+    line-height: 1.5;
+}
+
+/* Info box */
+.info-box {
+    margin-top: 30px;
+    padding: 20px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    color: #cbd5e1;
+    font-size: 14px;
+    line-height: 1.7;
+    border: 1px solid rgba(255,255,255,0.06);
+}
+
+/* Non-medical rejection */
+.rejection-card {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    border-left: 4px solid #ef4444;
+    padding: 30px;
+    border-radius: 15px;
+    text-align: center;
+    margin-top: 20px;
+    animation: fadeUp 0.5s ease;
+}
+
+.rejection-card .icon {
+    font-size: 48px;
+    margin-bottom: 15px;
+}
+
+.rejection-card h3 {
+    color: #fca5a5;
+    margin-bottom: 10px;
+}
+
+.rejection-card p {
+    color: #e2e8f0;
+    font-size: 14px;
+    line-height: 1.6;
 }
 
 /* Responsive */
 @media (max-width: 900px) {
     .sidebar {
-        display: none;
+        width: 100%;
+        height: auto;
+        position: relative;
+        padding: 20px;
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        z-index: 5;
     }
+    
+    .sidebar .logo {
+        margin-bottom: 0;
+        font-size: 18px;
+    }
+    
+    .sidebar a {
+        display: inline-block;
+        padding: 10px 15px;
+        margin-bottom: 0;
+        margin-right: 10px;
+        font-size: 13px;
+    }
+    
     .main {
         margin-left: 0;
         padding: 20px;
+    }
+    
+    .box {
+        padding: 20px;
+    }
+    
+    .gemini-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .progress-dots {
+        min-width: 200px;
+    }
+    
+    .loading-step {
+        min-width: 250px;
+        font-size: 12px;
+        padding: 12px 20px;
+    }
+    
+    .dna-loader {
+        gap: 10px;
+        margin-bottom: 30px;
+    }
+    
+    .dna-loader .dot {
+        width: 12px;
+        height: 12px;
+    }
+}
+
+@media (max-width: 600px) {
+    .sidebar {
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 10px;
+    }
+    
+    .sidebar a {
+        font-size: 12px;
+        padding: 8px 12px;
+        flex: 1;
+        min-width: 80px;
+        text-align: center;
+        margin-right: 5px;
+    }
+    
+    .main {
+        padding: 15px;
+    }
+    
+    .box {
+        padding: 15px;
+    }
+    
+    h2 {
+        font-size: 22px;
+    }
+    
+    .upload-icon {
+        font-size: 36px;
+        margin-bottom: 8px;
+    }
+    
+    .upload-text {
+        font-size: 12px;
+    }
+    
+    .upload-area {
+        padding: 25px 15px;
+        min-height: 140px;
+    }
+    
+    .preview-img {
+        max-width: 150px;
+        max-height: 120px;
+    }
+    
+    .result-image {
+        max-width: 100%;
+        height: auto;
+    }
+    
+    .btn {
+        padding: 12px;
+        font-size: 14px;
+    }
+    
+    .loading-text {
+        font-size: 18px;
+    }
+    
+    .loading-subtext {
+        font-size: 12px;
+    }
+    
+    .loading-step {
+        min-width: 200px;
+        font-size: 11px;
+        padding: 10px 16px;
+        margin-top: 10px;
+    }
+    
+    .gemini-grid {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+    
+    .gemini-item {
+        padding: 12px;
+    }
+    
+    .gemini-item strong {
+        font-size: 11px;
+    }
+    
+    .gemini-item p {
+        font-size: 12px;
+    }
+    
+    .prediction-box {
+        padding: 15px;
+    }
+    
+    .confidence-bar {
+        margin: 10px auto;
+    }
+    
+    .info-box {
+        font-size: 12px;
+        padding: 15px;
+        line-height: 1.5;
+    }
+    
+    .rejection-card {
+        padding: 20px;
+    }
+    
+    .rejection-card .icon {
+        font-size: 36px;
     }
 }
 </style>
@@ -275,6 +878,29 @@ h2 {
     <a href="/train">🧠 Train Model</a>
     <a href="/model_info">📋 Model Info</a>
     <a href="/logout">🚪 Logout</a>
+</div>
+
+<!-- Loading Overlay -->
+<div class="loading-overlay" id="loadingOverlay" role="status" aria-label="Processing your image">
+    <div class="loader-container">
+        <div class="dna-loader" aria-hidden="true">
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+        </div>
+        <div class="loading-text">Analyzing Medical Image...</div>
+        <div class="loading-subtext">Running CNN model + Gemini AI validation</div>
+        <div class="loading-step" id="loadingStep" aria-live="polite">🔬 Processing image through CNN model...</div>
+        <div class="progress-dots" aria-hidden="true">
+            <div class="progress-dot"></div>
+            <div class="progress-dot"></div>
+            <div class="progress-dot"></div>
+        </div>
+    </div>
 </div>
 
 <!-- Main -->
@@ -295,66 +921,475 @@ h2 {
             {% endwith %}
 
             <!-- Upload Form -->
-            <form method="POST" enctype="multipart/form-data">
+            <form method="POST" enctype="multipart/form-data" id="uploadForm">
                 <div class="form-group">
                     <label for="image">📁 Upload Medical Image</label>
-                    <input type="file" name="image" id="image" accept=".png,.jpg,.jpeg,.gif,.bmp" required>
-                    <div class="file-info">
-                        ℹ️ Supported formats: PNG, JPG, JPEG, GIF, BMP | Max size: 5MB
+                    <div class="upload-area" id="uploadArea">
+                        <input type="file" name="image" id="image" accept=".png,.jpg,.jpeg,.gif,.bmp" required>
+                        <div class="upload-icon" id="uploadIcon">📤</div>
+                        <div class="upload-text">
+                            <strong>Click to upload</strong> or drag and drop<br>
+                            PNG, JPG, JPEG, GIF, BMP • Max 5MB
+                        </div>
+                        <div class="file-name" id="fileName"></div>
+                        <img class="preview-img" id="previewImg" alt="Preview">
                     </div>
                 </div>
-                <button type="submit" class="btn">🧬 Analyze Image</button>
+                <button type="submit" class="btn" id="submitBtn">🧬 Analyze Image</button>
             </form>
 
-            <!-- Results Section -->
+            <!-- ===== NON-MEDICAL IMAGE REJECTION ===== -->
+            {% if error and not predicted_class %}
+                <div class="rejection-card">
+                    <div class="icon">🚫</div>
+                    <h3>Not a Medical Image</h3>
+                    <p>{{ error }}</p>
+                    <p style="margin-top:15px; color:#94a3b8; font-size:13px;">
+                        Please upload a <strong>breast ultrasound</strong>, <strong>liver scan</strong>, or <strong>skin lesion</strong> image for analysis.
+                    </p>
+                </div>
+
+                {% if image_path %}
+                <div class="result-card" style="margin-top:15px; text-align:center;">
+                    <p style="color:#94a3b8; font-size:13px; margin-bottom:10px;">Uploaded image:</p>
+                    <img src="{{ image_path }}" alt="Uploaded" class="result-image" style="max-width:250px; opacity:0.6;">
+                </div>
+                {% endif %}
+            {% endif %}
+
+            <!-- ===== SUCCESSFUL PREDICTION RESULTS ===== -->
             {% if predicted_class %}
                 <div class="results-section">
+
+                    <!-- CNN Result Card -->
                     <div class="result-card">
-                        <h3>📊 Analysis Results</h3>
+                        <h3>📊 CNN Model Analysis</h3>
 
                         {% if image_path %}
                             <img src="{{ image_path }}" alt="Uploaded Image" class="result-image">
                         {% endif %}
 
-                        <div class="prediction">
-                            <h4>🎯 Prediction: {{ predicted_class }}</h4>
+                        <div class="prediction-box">
+                            <h4>🎯 {{ predicted_class }}</h4>
                             {% if confidence %}
-                                <p>
-                                    Confidence: 
-                                    <span class="confidence">{{ "%.2f"|format(confidence) }}%</span>
-                                </p>
+                                <div class="confidence-bar">
+                                    <div class="confidence-fill" data-width="{{ confidence }}"></div>
+                                </div>
+                                <span class="confidence-label">CNN Confidence: {{ "%.1f"|format(confidence) }}%</span>
                             {% endif %}
                         </div>
 
-                        <div class="suggestion">
+                        <div class="suggestion-box">
                             <strong>💊 Recommendation:</strong><br>
                             {{ suggestion }}
                         </div>
                     </div>
+
+                    <!-- ===== GEMINI AI SECOND OPINION ===== -->
+                    {% if gemini and not gemini.error %}
+                    <div class="gemini-card">
+                        <h3>🤖 Gemini Pro — AI Second Opinion</h3>
+
+                        <div class="gemini-grid">
+                            <div class="gemini-item">
+                                <strong>📋 AI Diagnosis</strong>
+                                <p>{{ gemini.gemini_diagnosis }}</p>
+                            </div>
+                            <div class="gemini-item">
+                                <strong>🏷️ Detected Condition</strong>
+                                <p>{{ gemini.detected_condition }}</p>
+                            </div>
+                            <div class="gemini-item">
+                                <strong>🔍 Image Type</strong>
+                                <p>{{ gemini.image_type }}</p>
+                            </div>
+                            <div class="gemini-item">
+                                <strong>🫀 Organ</strong>
+                                <p>{{ gemini.organ_detected | default('N/A') | capitalize }}</p>
+                            </div>
+                        </div>
+
+                        <!-- Gemini Confidence -->
+                        {% if gemini.gemini_confidence %}
+                        <div style="text-align:center; margin-top:15px;">
+                            <div class="gemini-confidence-bar">
+                                <div class="gemini-confidence-fill" data-width="{{ gemini.gemini_confidence }}"></div>
+                            </div>
+                            <span style="color:#c4b5fd; font-size:13px; font-weight:600;">AI Confidence: {{ gemini.gemini_confidence }}%</span>
+                        </div>
+                        {% endif %}
+
+                        <!-- Badges -->
+                        <div class="badge-row">
+                            {% if gemini.gemini_agrees %}
+                                <span class="badge badge-agree">✅ AI Agrees with CNN</span>
+                            {% else %}
+                                <span class="badge badge-disagree">⚠️ AI Disagrees with CNN</span>
+                            {% endif %}
+
+                            {% if gemini.severity %}
+                                <span class="badge badge-severity-{{ gemini.severity }}">
+                                    Severity: {{ gemini.severity | capitalize }}
+                                </span>
+                            {% endif %}
+
+                            <span class="badge badge-info">{{ gemini.image_type }}</span>
+                        </div>
+
+                        <!-- Analysis Notes -->
+                        {% if gemini.analysis_notes %}
+                        <div class="notes-box">
+                            <strong>📝 Analysis Notes</strong>
+                            <p>{{ gemini.analysis_notes }}</p>
+                        </div>
+                        {% endif %}
+
+                        <!-- AI Recommendation -->
+                        {% if gemini.gemini_suggestion %}
+                        <div class="notes-box ai-recommendation-box" style="margin-top:10px;">
+                            <strong>🤖 AI Recommendation</strong>
+                            <p>{{ gemini.gemini_suggestion }}</p>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% elif gemini and gemini.error %}
+                    <div class="result-card" style="border-left: 4px solid #f59e0b;">
+                        <p style="color:#fcd34d; font-size:13px; text-align:center;">
+                            ⚠️ AI second opinion unavailable: {{ gemini.error }}
+                        </p>
+                    </div>
+                    {% endif %}
+
                 </div>
             {% endif %}
 
-            <!-- Error Message -->
-            {% if error %}
-                <div class="alert alert-error" style="margin-top: 20px;">
-                    ⚠️ {{ error }}
-                </div>
-            {% endif %}
-
-            <!-- Info Box -->
+            <!-- Info Box (no results yet) -->
             {% if not predicted_class and not error %}
-                <div style="margin-top: 30px; padding: 20px; background: rgba(255, 255, 255, 0.05); border-radius: 10px; color: #cbd5e1; font-size: 14px; line-height: 1.6;">
+                <div class="info-box">
                     <strong>ℹ️ How to use:</strong><br>
-                    1. Upload a medical image (breast, liver, or skin)<br>
-                    2. Click "Analyze Image" to run detection<br>
-                    3. View the prediction and recommendation<br>
+                    1. Upload a medical image (breast ultrasound, liver scan, or skin lesion)<br>
+                    2. Click "Analyze Image" — the system runs two checks:<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;• <strong>CNN Model</strong> — Deep learning classification<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;• <strong>Gemini Pro AI</strong> — Validates the image & provides a second opinion<br>
+                    3. View combined results with confidence scores and recommendations<br>
                     <br>
-                    <strong>Note:</strong> Make sure the model has been trained before performing detection. Visit the "Train Model" page to train.
+                    <span style="color:#f59e0b;">⚠️ Non-medical images (objects, selfies, etc.) will be automatically rejected.</span>
                 </div>
             {% endif %}
         </div>
     </div>
 </div>
+
+<script>
+'use strict';
+
+// Configuration
+const CONFIG = {
+    MAX_FILE_SIZE: 5 * 1024 * 1024,
+    ALLOWED_EXTENSIONS: ['png', 'jpg', 'jpeg', 'gif', 'bmp'],
+    PREVIEW_MAX_WIDTH: 200,
+    PREVIEW_MAX_HEIGHT: 150,
+    STEP_INTERVAL: 2500,
+    ANIMATION_DELAY: 300
+};
+
+// Loading steps
+const LOADING_STEPS = [
+    '🔬 Processing image through CNN model...',
+    '🧠 Running deep learning classification...',
+    '🤖 Sending to Gemini Pro for validation...',
+    '📋 Gemini AI analyzing medical patterns...',
+    '✅ Compiling results...'
+];
+
+// DOM elements cache
+const DOM = {
+    fileInput: null,
+    uploadArea: null,
+    uploadIcon: null,
+    fileName: null,
+    previewImg: null,
+    form: null,
+    submitBtn: null,
+    loadingOverlay: null,
+    loadingStep: null,
+    
+    init() {
+        this.fileInput = document.getElementById('image');
+        this.uploadArea = document.getElementById('uploadArea');
+        this.uploadIcon = document.getElementById('uploadIcon');
+        this.fileName = document.getElementById('fileName');
+        this.previewImg = document.getElementById('previewImg');
+        this.form = document.getElementById('uploadForm');
+        this.submitBtn = document.getElementById('submitBtn');
+        this.loadingOverlay = document.getElementById('loadingOverlay');
+        this.loadingStep = document.getElementById('loadingStep');
+        
+        return this.isValid();
+    },
+    
+    isValid() {
+        return !!(this.fileInput && this.uploadArea && this.form && 
+                  this.submitBtn && this.loadingOverlay && this.loadingStep);
+    }
+};
+
+// File validation utility
+const FileValidator = {
+    isValidExtension(filename) {
+        if (!filename || !filename.includes('.')) return false;
+        const ext = filename.split('.').pop().toLowerCase();
+        return CONFIG.ALLOWED_EXTENSIONS.includes(ext);
+    },
+    
+    isValidSize(file) {
+        return file && file.size <= CONFIG.MAX_FILE_SIZE;
+    },
+    
+    formatFileSize(bytes) {
+        if (!bytes || bytes <= 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+    },
+    
+    validate(file) {
+        if (!file) {
+            return { valid: false, message: 'No file selected' };
+        }
+        
+        if (!this.isValidExtension(file.name)) {
+            return { 
+                valid: false, 
+                message: `Invalid file type. Allowed: ${CONFIG.ALLOWED_EXTENSIONS.join(', ')}` 
+            };
+        }
+        
+        if (!this.isValidSize(file)) {
+            return { 
+                valid: false, 
+                message: `File size exceeds limit (${this.formatFileSize(CONFIG.MAX_FILE_SIZE)})` 
+            };
+        }
+        
+        return { valid: true, message: '' };
+    }
+};
+
+// File upload handler
+const FileUploadHandler = {
+    handleFileSelect(event) {
+        if (!event.target.files || !event.target.files[0]) return;
+        
+        const file = event.target.files[0];
+        const validation = FileValidator.validate(file);
+        
+        if (!validation.valid) {
+            alert('File validation failed: ' + validation.message);
+            DOM.fileInput.value = '';
+            DOM.uploadArea.classList.remove('has-file');
+            return;
+        }
+        
+        this.displayFileInfo(file);
+        this.displayPreview(file);
+    },
+    
+    displayFileInfo(file) {
+        if (!DOM.uploadArea || !DOM.uploadIcon || !DOM.fileName) return;
+        
+        DOM.uploadArea.classList.add('has-file');
+        DOM.uploadIcon.textContent = '✅';
+        DOM.fileName.style.display = 'block';
+        DOM.fileName.textContent = `${file.name} (${FileValidator.formatFileSize(file.size)})`;
+    },
+    
+    displayPreview(file) {
+        if (!DOM.previewImg) return;
+        
+        const reader = new FileReader();
+        reader.onerror = () => {
+            console.error('Failed to read file');
+            DOM.previewImg.style.display = 'none';
+        };
+        
+        reader.onload = (e) => {
+            if (e.target && e.target.result) {
+                DOM.previewImg.src = e.target.result;
+                DOM.previewImg.style.display = 'block';
+            }
+        };
+        
+        try {
+            reader.readAsDataURL(file);
+        } catch (err) {
+            console.error('Error reading file:', err);
+        }
+    },
+    
+    init() {
+        if (!DOM.fileInput) return;
+        
+        DOM.fileInput.addEventListener('change', this.handleFileSelect.bind(this));
+        
+        // Drag and drop support
+        if (DOM.uploadArea) {
+            DOM.uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                DOM.uploadArea.style.borderColor = '#38bdf8';
+                DOM.uploadArea.style.background = 'rgba(56, 189, 248, 0.15)';
+            });
+            
+            DOM.uploadArea.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                DOM.uploadArea.style.borderColor = 'rgba(255, 255, 255, 0.25)';
+                DOM.uploadArea.style.background = 'rgba(255, 255, 255, 0.03)';
+            });
+            
+            DOM.uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                DOM.uploadArea.style.borderColor = 'rgba(255, 255, 255, 0.25)';
+                DOM.uploadArea.style.background = 'rgba(255, 255, 255, 0.03)';
+                
+                if (e.dataTransfer && e.dataTransfer.files[0]) {
+                    DOM.fileInput.files = e.dataTransfer.files;
+                    this.handleFileSelect({ target: DOM.fileInput });
+                }
+            });
+        }
+    }
+};
+
+// Loading animation handler
+const LoadingAnimation = {
+    stepIndex: 0,
+    stepInterval: null,
+    
+    updateStep() {
+        if (!DOM.loadingStep) return;
+        this.stepIndex = (this.stepIndex + 1) % LOADING_STEPS.length;
+        DOM.loadingStep.textContent = LOADING_STEPS[this.stepIndex];
+    },
+    
+    start() {
+        if (!DOM.loadingOverlay || !DOM.submitBtn) return;
+        
+        this.stepIndex = 0;
+        DOM.submitBtn.disabled = true;
+        DOM.submitBtn.textContent = '⏳ Analyzing...';
+        DOM.loadingOverlay.classList.add('active');
+        
+        // Clear any existing interval
+        this.stop();
+        
+        // Start new interval
+        this.stepInterval = setInterval(() => this.updateStep(), CONFIG.STEP_INTERVAL);
+    },
+    
+    stop() {
+        if (this.stepInterval) {
+            clearInterval(this.stepInterval);
+            this.stepInterval = null;
+        }
+        
+        if (DOM.submitBtn) {
+            DOM.submitBtn.disabled = false;
+            DOM.submitBtn.textContent = '🧬 Analyze Image';
+        }
+        
+        if (DOM.loadingOverlay) {
+            DOM.loadingOverlay.classList.remove('active');
+        }
+    },
+    
+    reset() {
+        this.stop();
+        this.stepIndex = 0;
+    }
+};
+
+// Form submission handler
+const FormHandler = {
+    handleSubmit(event) {
+        if (!DOM.fileInput || !DOM.fileInput.files || !DOM.fileInput.files[0]) {
+            event.preventDefault();
+            alert('Please select a file first');
+            return false;
+        }
+        
+        const file = DOM.fileInput.files[0];
+        const validation = FileValidator.validate(file);
+        
+        if (!validation.valid) {
+            event.preventDefault();
+            alert('File validation failed: ' + validation.message);
+            return false;
+        }
+        
+        // Start loading animation
+        LoadingAnimation.start();
+        
+        // Clean up interval on page unload
+        window.addEventListener('beforeunload', () => LoadingAnimation.reset());
+        
+        return true;
+    },
+    
+    init() {
+        if (!DOM.form) return;
+        DOM.form.addEventListener('submit', this.handleSubmit.bind(this));
+    }
+};
+
+// Confidence bar animation
+const ConfidenceBar = {
+    animateBars() {
+        const bars = document.querySelectorAll('[data-width]');
+        if (bars.length === 0) return;
+        
+        bars.forEach((bar) => {
+            const width = bar.getAttribute('data-width');
+            if (width && !isNaN(width)) {
+                setTimeout(() => {
+                    bar.style.width = width + '%';
+                }, CONFIG.ANIMATION_DELAY);
+            }
+        });
+    },
+    
+    init() {
+        this.animateBars();
+    }
+};
+
+// Initialize app
+document.addEventListener('DOMContentLoaded', () => {
+    try {
+        // Initialize DOM elements
+        if (!DOM.init()) {
+            console.warn('Some DOM elements not found, app may not work fully');
+            return;
+        }
+        
+        // Initialize all handlers
+        FileUploadHandler.init();
+        FormHandler.init();
+        ConfidenceBar.init();
+        
+    } catch (err) {
+        console.error('Initialization error:', err);
+    }
+});
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+    LoadingAnimation.reset();
+});
+</script>
 
 </body>
 </html>
