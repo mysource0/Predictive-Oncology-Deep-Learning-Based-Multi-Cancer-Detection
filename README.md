@@ -1,16 +1,19 @@
 # 🧬 Predictive Oncology: Deep Learning-Based Multi-Cancer Detection
 
-A Flask web application that uses **Convolutional Neural Networks (CNN)** to detect multiple cancer types from medical images — including **Breast**, **Liver**, and **Skin** cancers.
+A Flask web application that combines **Convolutional Neural Networks (CNN)** with **Google Gemini AI** to detect multiple cancer types from medical images — including **Breast**, **Liver**, and **Skin** cancers.
 
-![Python](https://img.shields.io/badge/Python-3.8+-blue?logo=python)
+![Python](https://img.shields.io/badge/Python-3.9+-blue?logo=python)
 ![TensorFlow](https://img.shields.io/badge/TensorFlow-2.x-orange?logo=tensorflow)
 ![Flask](https://img.shields.io/badge/Flask-2.3-green?logo=flask)
+![Gemini](https://img.shields.io/badge/Gemini_AI-2.5_Pro-purple?logo=google)
 
 ---
 
 ## 📋 Table of Contents
 
 - [Features](#-features)
+- [How It Works — Dual AI Pipeline](#-how-it-works--dual-ai-pipeline)
+- [Supported Cancer Classes](#-supported-cancer-classes)
 - [Project Structure](#-project-structure)
 - [Setup — Local (Conda)](#-setup--local-conda-recommended)
 - [Setup — Local (venv / pip)](#-setup--local-venv--pip)
@@ -19,7 +22,9 @@ A Flask web application that uses **Convolutional Neural Networks (CNN)** to det
 - [Dataset Structure](#-dataset-structure)
 - [API Routes](#-api-routes)
 - [Training Details](#-training-details)
+- [Gemini AI Configuration](#-gemini-ai-configuration)
 - [Troubleshooting](#-troubleshooting)
+- [Security Notes](#-security-notes)
 
 ---
 
@@ -28,12 +33,80 @@ A Flask web application that uses **Convolutional Neural Networks (CNN)** to det
 | Feature | Description |
 |---|---|
 | 🔐 **User Authentication** | Secure signup/signin with bcrypt password hashing |
-| 🧠 **Model Training** | Train a CNN directly from the web UI with real-time logs |
+| 🧠 **CNN Model Training** | Train a CNN directly from the web UI with real-time logs |
 | 🔬 **Cancer Detection** | Upload an image and get a prediction with confidence score |
+| 🤖 **Gemini AI Second Opinion** | Google Gemini 2.5 Pro validates the image and provides an independent diagnosis |
+| 🚫 **Non-Medical Image Rejection** | Gemini automatically detects and rejects non-medical images (selfies, objects, etc.) |
 | 📊 **6 Training Graphs** | Accuracy, Loss, Confusion Matrix, Per-Class Metrics, Overall Stats, Per-Class Accuracy |
 | 🔄 **Retrain Support** | Retrain the model anytime with the click of a button |
 | 📁 **Dynamic Classes** | Automatically discovers cancer classes from your dataset folders |
-| 📋 **Model Info** | View model training status and metadata |
+| 📋 **Model Info** | View model architecture, training status, and metadata |
+| ⏳ **Loading Animations** | DNA helix loader with step-by-step progress indicators during analysis |
+| 📱 **Responsive Design** | Works on desktop, tablet, and mobile screens |
+
+---
+
+## 🔬 How It Works — Dual AI Pipeline
+
+When you upload a medical image, the system runs **two independent analyses**:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    User Uploads Image                    │
+└─────────────────────┬───────────────────────────────────┘
+                      │
+          ┌───────────┴───────────┐
+          ▼                       ▼
+┌─────────────────┐    ┌──────────────────────┐
+│   CNN Model     │    │   Gemini 2.5 Pro AI  │
+│   (TensorFlow)  │    │   (Google API)       │
+├─────────────────┤    ├──────────────────────┤
+│ • Classification│    │ • Image Validation   │
+│ • Confidence %  │    │ • Medical Diagnosis  │
+│ • Class Label   │    │ • Severity Rating    │
+└────────┬────────┘    │ • Agreement Check    │
+         │             │ • Recommendations    │
+         │             └──────────┬───────────┘
+         └───────────┬────────────┘
+                     ▼
+         ┌───────────────────────┐
+         │   Combined Results    │
+         │   • CNN Prediction    │
+         │   • AI Second Opinion │
+         │   • Severity Badge    │
+         │   • Recommendations   │
+         └───────────────────────┘
+```
+
+### Step 1 — Image Validation (Gemini)
+Gemini checks if the uploaded image is a valid medical image. Non-medical images (selfies, food, landscapes, screenshots) are **automatically rejected** with a clear explanation.
+
+### Step 2 — CNN Classification
+The trained CNN model classifies the image into one of the supported cancer classes with a confidence percentage.
+
+### Step 3 — AI Second Opinion (Gemini)
+Gemini independently analyzes the image and provides:
+- Its own diagnosis and detected condition
+- Confidence level (0–100%)
+- Severity rating (normal / low / moderate / high / critical)
+- Whether it agrees or disagrees with the CNN prediction
+- Detailed analysis notes with clinical observations
+- Specific medical recommendations
+
+---
+
+## 🩺 Supported Cancer Classes
+
+| Organ | Condition | Severity |
+|-------|-----------|----------|
+| 🩺 Breast | Normal | Healthy |
+| ⚠️ Breast | Benign Tumor | Low — monitor regularly |
+| 🔴 Breast | Malignant Tumor | High — consult oncologist |
+| 🟢 Liver | Healthy | Healthy |
+| 🟡 Liver | Hepatic Steatosis (Fatty Liver) | Moderate — lifestyle changes |
+| 🧴 Skin | Healthy | Healthy |
+| ⚠️ Skin | Dermatofibroma | Low — benign condition |
+| 🔴 Skin | Seborrheic Keratosis | Low — non-cancerous growth |
 
 ---
 
@@ -42,39 +115,45 @@ A Flask web application that uses **Convolutional Neural Networks (CNN)** to det
 ```
 Predictive Oncology Deep Learning-Based Multi-Cancer Detection/
 │
-├── app.py                  # Main Flask application (routes, training, detection)
+├── app.py                  # Main Flask app (routes, CNN training, Gemini integration)
 ├── requirements.txt        # Python dependencies
-├── .env.example            # Environment variables template
+├── .env                    # Environment variables (API keys, secrets)
+├── .env.example            # Template for .env
 ├── .gitignore              # Git ignore rules
-├── model.h5                # Trained model file (generated after training)
+├── Dockerfile              # Docker container configuration
+├── docker-compose.yml      # Docker Compose orchestration
+├── README.md               # This file
+│
+├── model.h5                # Trained CNN model (generated after training)
+├── model.json              # Model architecture JSON (generated)
 ├── users.db                # SQLite database (auto-created on first run)
 │
 ├── static/                 # Static assets
-│   ├── uploads/            # User-uploaded images (per-user folders)
-│   ├── accuracy.png        # Training accuracy graph (generated)
-│   ├── loss.png            # Training loss graph (generated)
+│   ├── uploads/            # User-uploaded images (per-user timestamped folders)
+│   ├── accuracy.png        # Training graph — accuracy (generated)
+│   ├── loss.png            # Training graph — loss (generated)
 │   ├── confusion_matrix.png
 │   ├── metrics.png
 │   ├── overall_stats.png
 │   └── class_accuracy.png
 │
-├── templates/              # HTML templates (Jinja2)
-│   ├── home.html           # Dashboard / landing page
+├── templates/              # Jinja2 HTML templates
+│   ├── home.html           # Dashboard with feature cards
 │   ├── signup.html         # User registration
 │   ├── signin.html         # User login
-│   ├── detection.html      # Image upload & prediction
-│   ├── train.html          # Model training page with graphs
-│   └── model_info.html     # Model status information
+│   ├── detection.html      # Image upload, CNN + Gemini results
+│   ├── train.html          # Model training page with 6 graphs
+│   └── model_info.html     # Model architecture & status info
 │
-├── train/                  # Training dataset (organized by class folders)
-│   ├── Breast  Normal/
+├── train/                  # Training dataset (one folder per class)
+│   ├── Breast Normal/
 │   ├── Breast Benign/
 │   ├── Breast Malignant/
 │   ├── Healthy Liver/
 │   ├── Liver Hepatic_Steatosis/
 │   ├── Skin Dermatofibroma/
 │   ├── Skin Healthy/
-│   └── Skin seborrheic_keratosis/
+│   └── Skin Seborrheic_Keratosis/
 │
 └── test/                   # Test dataset (same structure as train/)
 ```
@@ -85,6 +164,7 @@ Predictive Oncology Deep Learning-Based Multi-Cancer Detection/
 
 ### Prerequisites
 - [Anaconda](https://www.anaconda.com/download) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html) installed
+- A [Google Gemini API key](https://aistudio.google.com/apikey) (free tier available)
 - GPU support (optional but recommended for training)
 
 ### Step-by-Step
@@ -93,7 +173,7 @@ Predictive Oncology Deep Learning-Based Multi-Cancer Detection/
 # 1. Open Anaconda Prompt
 
 # 2. Create conda environment
-conda create -n finalyearproject python=3.10 -y
+conda create -n finalyearproject python=3.9 -y
 
 # 3. Activate environment
 conda activate finalyearproject
@@ -104,9 +184,10 @@ cd "D:\finalYearProject\Predictive Oncology Deep Learning-Based Multi-Cancer Det
 # 5. Install dependencies
 pip install -r requirements.txt
 
-# 6. (Optional) Create .env file for custom secret key
+# 6. Set up environment variables
 copy .env.example .env
-# Edit .env and set a secure SECRET_KEY
+# Edit .env and add your Gemini API key:
+#   GEMINI_API_KEY=your-api-key-here
 
 # 7. Run the application
 python app.py
@@ -117,7 +198,6 @@ Open your browser and go to: **http://localhost:5000**
 
 ### Quick Commands (after initial setup)
 ```bash
-# Every time you want to run:
 conda activate finalyearproject
 cd "D:\finalYearProject\Predictive Oncology Deep Learning-Based Multi-Cancer Detection"
 python app.py
@@ -128,7 +208,7 @@ python app.py
 ## 🐍 Setup — Local (venv / pip)
 
 ### Prerequisites
-- Python 3.8 – 3.11 installed
+- Python 3.9 – 3.11 installed
 - `pip` package manager
 
 ### Step-by-Step
@@ -149,8 +229,9 @@ source venv/bin/activate
 # 4. Install dependencies
 pip install -r requirements.txt
 
-# 5. (Optional) Create .env file
+# 5. Set up environment variables
 copy .env.example .env
+# Edit .env and add your Gemini API key
 
 # 6. Run the application
 python app.py
@@ -166,67 +247,7 @@ Open your browser and go to: **http://localhost:5000**
 ### Prerequisites
 - [Docker Desktop](https://www.docker.com/products/docker-desktop) installed and running
 
-### Step 1: Create the Dockerfile
-
-Create a file called `Dockerfile` in the project root:
-
-```dockerfile
-FROM python:3.10-slim
-
-# Install system dependencies for OpenCV
-RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy project files
-COPY . .
-
-# Create upload directory
-RUN mkdir -p static/uploads
-
-EXPOSE 5000
-
-ENV FLASK_ENV=production
-ENV SECRET_KEY=change-this-to-a-secure-key
-
-CMD ["python", "app.py"]
-```
-
-### Step 2: Create docker-compose.yml
-
-Create a file called `docker-compose.yml` in the project root:
-
-```yaml
-version: '3.8'
-
-services:
-  web:
-    build: .
-    ports:
-      - "5000:5000"
-    volumes:
-      - ./train:/app/train:ro          # Training data (read-only)
-      - ./test:/app/test:ro            # Test data (read-only)
-      - uploads_data:/app/static/uploads  # Persistent uploads
-      - model_data:/app/model_data       # Persistent model
-    environment:
-      - SECRET_KEY=your-secure-secret-key
-      - FLASK_ENV=production
-    restart: unless-stopped
-
-volumes:
-  uploads_data:
-  model_data:
-```
-
-### Step 3: Build & Run
+### Build & Run
 
 ```bash
 # Navigate to project directory
@@ -254,9 +275,6 @@ Open your browser and go to: **http://localhost:5000**
 # View running containers
 docker ps
 
-# View logs in real-time
-docker-compose logs -f
-
 # Enter container shell (for debugging)
 docker exec -it <container_name> bash
 
@@ -273,16 +291,17 @@ docker-compose down -v
 
 ### 1. Create an Account
 - Visit `http://localhost:5000`
-- Fill in a username and password (min 6 characters)
-- Click **Sign Up**
+- Choose a username and password (min 6 characters)
+- Click **📝 Register Account**
 
 ### 2. Sign In
 - Go to the **Sign In** page
 - Enter your credentials
+- Click **🔐 Sign In**
 
 ### 3. Train the Model
 - Click **🧠 Train Model** in the sidebar
-- Click **Start Training** button
+- Click **Start Training**
 - Wait for training to complete (~2–5 minutes depending on hardware)
 - 6 training graphs will be generated and displayed
 - To retrain later, click **🔄 Retrain Model**
@@ -290,36 +309,41 @@ docker-compose down -v
 ### 4. Detect Cancer
 - Click **🔬 Detection** in the sidebar
 - Upload a medical image (PNG, JPG, JPEG, GIF, BMP — max 5MB)
-- The model will classify the image and show:
-  - **Predicted class** (e.g., "Breast Malignant")
-  - **Confidence score** (percentage)
-  - **Medical suggestion**
+- Click **🧬 Analyze Image**
+- A loading animation shows the dual-analysis progress
+- View combined results:
+  - **CNN Model Analysis** — predicted class, confidence bar, recommendation
+  - **Gemini AI Second Opinion** — independent diagnosis, severity, agreement badge, analysis notes, AI recommendation
 
 ### 5. View Model Info
-- Click **📋 Model Info** to see training status and metadata
+- Click **📋 Model Info** to see:
+  - Model training status and last trained timestamp
+  - Discovered cancer classes
+  - CNN architecture details
+  - Supported conditions and dataset structure
 
 ---
 
 ## 📁 Dataset Structure
 
-The model auto-discovers classes from the `train/` folder. Each subfolder = one class.
+The model auto-discovers classes from the `train/` folder. Each subfolder name becomes a class label.
 
 ```
 train/
-├── Breast  Normal/          # ~187 images
-├── Breast Benign/           # ~204 images
-├── Breast Malignant/        # ~200 images
-├── Healthy Liver/           # ~200 images
-├── Liver Hepatic_Steatosis/ # ~191 images
-├── Skin Dermatofibroma/     # ~95 images
-├── Skin Healthy/            # ~143 images
-└── Skin seborrheic_keratosis/ # ~18 images
+├── Breast Normal/               # Healthy breast tissue images
+├── Breast Benign/               # Non-cancerous breast tumor images
+├── Breast Malignant/            # Cancerous breast tumor images
+├── Healthy Liver/               # Normal liver scan images
+├── Liver Hepatic_Steatosis/     # Fatty liver images
+├── Skin Dermatofibroma/         # Benign skin condition images
+├── Skin Healthy/                # Normal skin images
+└── Skin Seborrheic_Keratosis/   # Non-cancerous skin growth images
 
 test/
 └── (same folder structure with test images)
 ```
 
-> **Tip:** To add a new cancer type, simply create a new folder in both `train/` and `test/` with images. The model will automatically detect and train on it.
+> **Tip:** To add a new cancer type, simply create a new folder in both `train/` and `test/` with labeled images. The model will automatically detect and train on it.
 
 ---
 
@@ -330,23 +354,24 @@ test/
 | GET/POST | `/` | ❌ | Sign up page |
 | GET/POST | `/signin` | ❌ | Sign in page |
 | GET | `/home` | ✅ | Dashboard |
-| GET/POST | `/detection` | ✅ | Upload image & get prediction |
+| GET/POST | `/detection` | ✅ | Upload image → CNN + Gemini analysis |
 | GET | `/train` | ❌ | Train model page |
 | GET | `/train?force=1` | ❌ | Force retrain the model |
-| GET | `/model_info` | ✅ | View model status |
-| GET | `/logout` | ✅ | Logout |
+| GET | `/model_info` | ✅ | View model status & architecture |
+| GET | `/logout` | ✅ | Logout and clear session |
 
 ---
 
 ## 🧠 Training Details
 
-### Model Architecture (CNN)
+### CNN Model Architecture
 ```
-Input (150×150×3)
+Input (150×150×3 RGB)
   → Conv2D(32, 3×3, ReLU) → MaxPooling2D
   → Conv2D(64, 3×3, ReLU) → MaxPooling2D
   → Flatten
   → Dense(128, ReLU)
+  → Dropout(0.3)
   → Dense(num_classes, Softmax)
 ```
 
@@ -354,18 +379,52 @@ Input (150×150×3)
 | Parameter | Value |
 |-----------|-------|
 | Image Size | 150 × 150 px |
+| Normalization | Pixel values / 255.0 |
 | Epochs | 10 |
+| Batch Size | 32 |
 | Validation Split | 20% |
 | Optimizer | Adam |
 | Loss Function | Sparse Categorical Crossentropy |
+| Dropout | 30% |
 
 ### Generated Graphs (after training)
 1. 📈 **Accuracy** — Train vs Validation accuracy over epochs
 2. 📉 **Loss** — Train vs Validation loss over epochs
-3. 🎯 **Confusion Matrix** — True vs Predicted labels
-4. 📊 **Per-Class Metrics** — Precision, Recall, F1 per class
-5. 🏆 **Overall Performance** — Accuracy, Precision, Recall, F1
-6. ✅ **Per-Class Accuracy** — Individual class accuracy bars
+3. 🎯 **Confusion Matrix** — True vs Predicted labels heatmap
+4. 📊 **Per-Class Metrics** — Precision, Recall, F1-Score per class
+5. 🏆 **Overall Performance** — Weighted Accuracy, Precision, Recall, F1
+6. ✅ **Per-Class Accuracy** — Individual class accuracy horizontal bars
+
+---
+
+## 🤖 Gemini AI Configuration
+
+The Gemini integration uses **Gemini 2.5 Pro** for medical image analysis.
+
+### Getting an API Key
+1. Visit [Google AI Studio](https://aistudio.google.com/apikey)
+2. Sign in with your Google account
+3. Click **Create API Key**
+4. Copy the key and paste it in your `.env` file:
+   ```
+   GEMINI_API_KEY=your-api-key-here
+   ```
+
+### What Gemini Does
+| Step | Function |
+|------|----------|
+| **Validation** | Checks if the image is a valid medical image |
+| **Rejection** | Rejects non-medical images with an explanation |
+| **Diagnosis** | Provides an independent AI diagnosis |
+| **Agreement** | Compares its diagnosis with the CNN prediction |
+| **Severity** | Rates severity: normal / low / moderate / high / critical |
+| **Notes** | Describes specific visual patterns observed |
+| **Recommendation** | Provides targeted medical recommendation |
+
+### Fallback Behavior
+- If the Gemini API key is not configured, the system works with **CNN-only mode**
+- If the Gemini API call fails, the CNN result is still shown with a warning badge
+- Non-medical images are only rejected when Gemini is active
 
 ---
 
@@ -378,8 +437,18 @@ conda activate finalyearproject   # or: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### ❌ `SyntaxError` or app won't start
+```bash
+# Verify Python version (3.9+ required)
+python --version
+
+# Check for syntax errors
+python -m py_compile app.py
+```
+
 ### ❌ Model not found / "Train the model first"
 - Go to `/train` and click **Start Training**
+- Wait for training to complete before using Detection
 
 ### ❌ Training finds 0 classes
 - Ensure `train/` folder exists with subfolders containing images
@@ -388,6 +457,15 @@ pip install -r requirements.txt
 ### ❌ File upload rejected
 - Allowed formats: PNG, JPG, JPEG, GIF, BMP
 - Max size: 5MB
+
+### ❌ Gemini API errors
+- Verify your API key in `.env` is correct
+- Check that you have internet connectivity
+- The free tier has rate limits — wait and retry if you hit them
+
+### ❌ "Non-medical image" false positive
+- Gemini may occasionally reject valid medical images of unusual formats
+- Try a different image or temporarily disable Gemini by removing the API key
 
 ### ❌ Page hangs during training
 - Training takes ~2–5 minutes depending on dataset size and hardware
@@ -408,14 +486,34 @@ pip install tensorflow[and-cuda]
 ## 🔒 Security Notes
 
 - Change `SECRET_KEY` in `.env` before deploying to production
-- The default key is for development only
-- Never commit `.env` to version control
+- **Never commit `.env`** to version control (it's in `.gitignore`)
+- The Gemini API key should be kept private
 - Use HTTPS in production
-- Consider a production WSGI server (Gunicorn) for deployment
+- Consider a production WSGI server (Gunicorn/Waitress) for deployment
+- Uploaded images are stored per-user with timestamps
+
+---
+
+## 📦 Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| Flask 2.3 | Web framework |
+| TensorFlow 2.13 | CNN model training and inference |
+| OpenCV | Image loading and preprocessing |
+| NumPy | Array operations |
+| Matplotlib | Training graph generation |
+| Seaborn | Confusion matrix heatmap |
+| scikit-learn | Metrics (precision, recall, F1) |
+| google-generativeai | Gemini AI API client |
+| Pillow | Image handling for Gemini |
+| python-dotenv | Environment variable loading |
+| Werkzeug | Password hashing & file security |
 
 ---
 
 ## 📄 License
 
 This project is for **educational and research purposes** only.
-Always consult a qualified medical professional for cancer diagnosis.
+
+> ⚠️ **Disclaimer:** The predictions made by this system are NOT a substitute for professional medical diagnosis. Always consult qualified healthcare professionals and licensed oncologists for actual medical diagnosis and treatment decisions.

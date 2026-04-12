@@ -35,11 +35,8 @@ eggs/
 
 # Project specific — auto-generated, do NOT commit
 model.h5
-
-
-# Exclude large data folders
-train/*.png
-test/*.png
+model.json
+users.db
 
 # Generated graphs
 static/accuracy.png
@@ -68,3 +65,6 @@ htmlcov/
 *.rar
 *.zip
 *.7z
+
+# Gemini
+.gemini/
