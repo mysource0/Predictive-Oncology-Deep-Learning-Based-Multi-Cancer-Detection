@@ -1,0 +1,4860 @@
+`app.py`
+
+```python
+from flask import Flask, render_template, request, redirect, url_for, session, flash
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.preprocessing import image
+import os
+import json
+import sqlite3
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
+import cv2
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix, classification_report, precision_score, recall_score, f1_score
+import seaborn as sns
+from datetime import datetime
+from dotenv import load_dotenv
+import google.generativeai as genai
+from PIL import Image as PILImage
+
+from tensorflow.keras import layers, models
+
+load_dotenv()
+
+# Configure Gemini API
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
+app = Flask(__name__)
+app.secret_key = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
+
+# Configuration
+UPLOAD_FOLDER = 'static/uploads'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'bmp'}
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB
+
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
+
+# Global model cache
+_model_cache = None
+_training_in_progress = False
+
+def discover_classes(train_path="train"):
+    """Discover available class folders from the training directory"""
+    if not os.path.exists(train_path):
+        return []
+    return sorted([d for d in os.listdir(train_path)
+                   if os.path.isdir(os.path.join(train_path, d))])
+
+
+# Suggestions mapped by normalized (lowercased, single-spaced) class name
+_SUGGESTIONS = {
+    'breast normal': "Healthy. Maintain regular screening.",
+    'breast benign': "Non-cancerous tumor. Monitor regularly.",
+    'breast malignant': "Cancer detected. Consult oncologist immediately.",
+    'healthy liver': "Liver is healthy.",
+    'liver hepatic_steatosis': "Fatty liver. Improve diet & lifestyle.",
+    'skin dermatofibroma': "Benign skin condition.",
+    'skin healthy': "Skin is healthy.",
+    'skin seborrheic_keratosis': "Non-cancerous skin growth."
+}
+
+
+def get_suggestion(class_name):
+    """Get medical suggestion using case/space-insensitive matching"""
+    normalized = ' '.join(class_name.lower().split())
+    return _SUGGESTIONS.get(normalized, "Consult doctor for further diagnosis.")
+
+
+def gemini_validate_and_analyze(image_path, cnn_prediction=None, cnn_confidence=None):
+    """Use Gemini Pro Vision API to validate the image and provide a second opinion.
+    
+    Returns a dict with:
+        - is_medical: bool
+        - rejection_reason: str
+        - gemini_diagnosis: str
+        - gemini_agrees: bool
+        - gemini_confidence: int (0-100)
+        - severity: str
+        - gemini_suggestion: str
+        - error: str
+    """
+    if not GEMINI_API_KEY:
+        return {'error': 'Gemini API key not configured', 'is_medical': True}
+    
+    try:
+        model = genai.GenerativeModel('gemini-2.5-pro')
+        img = PILImage.open(image_path)
+        
+        cnn_info = ""
+        if cnn_prediction and cnn_confidence:
+            cnn_info = f'\nThe CNN model predicted: "{cnn_prediction}" with {cnn_confidence:.1f}% confidence.'
+        
+        prompt = f"""You are an expert medical image analysis AI assistant integrated into a cancer detection system.
+
+SUPPORTED CONDITIONS:
+- Breast: Normal, Benign tumor, Malignant tumor (from ultrasound/histopathology images)
+- Liver: Healthy, Hepatic Steatosis / Fatty Liver (from CT/ultrasound scans)
+- Skin: Healthy, Dermatofibroma, Seborrheic Keratosis (from dermoscopy/clinical photos)
+
+STEP 1 — IMAGE VALIDATION:
+Determine if this is a valid medical image (ultrasound, histopathology slide, CT scan, MRI, dermoscopy, clinical photo of skin lesion, etc.).
+Non-medical images include: everyday objects, food, animals, selfies, screenshots, landscapes, etc.
+
+STEP 2 — MEDICAL ANALYSIS (only if valid):
+Provide your expert diagnosis with reasoning.
+{cnn_info}
+
+Respond ONLY in valid JSON (no markdown, no backticks, no extra text):
+{{
+  "is_medical_image": true,
+  "rejection_reason": "",
+  "image_type": "e.g., breast ultrasound, skin dermoscopy, liver CT scan",
+  "organ_detected": "breast / liver / skin / unknown",
+  "gemini_diagnosis": "detailed diagnosis with reasoning",
+  "detected_condition": "exact condition name from supported list",
+  "gemini_confidence": 85,
+  "severity": "normal / low / moderate / high / critical",
+  "cnn_agrees": true,
+  "analysis_notes": "clinical observations, patterns noticed, why CNN may be right or wrong",
+  "recommendation": "specific medical recommendation based on findings"
+}}
+
+RULES:
+- gemini_confidence must be an integer 0-100
+- If NOT a medical image, set is_medical_image to false, gemini_confidence to 0, and explain clearly in rejection_reason
+- Be thorough in analysis_notes — mention specific visual patterns you observe
+- For severity: normal=healthy tissue, low=benign/non-concerning, moderate=needs monitoring, high=likely malignant, critical=urgent"""
+        
+        response = model.generate_content([prompt, img])
+        
+        response_text = response.text.strip()
+        if response_text.startswith('```'):
+            response_text = response_text.split('\n', 1)[1]
+            response_text = response_text.rsplit('```', 1)[0].strip()
+        
+        result = json.loads(response_text)
+        
+        return {
+            'is_medical': result.get('is_medical_image', True),
+            'rejection_reason': result.get('rejection_reason', ''),
+            'image_type': result.get('image_type', 'Unknown'),
+            'organ_detected': result.get('organ_detected', 'Unknown'),
+            'gemini_diagnosis': result.get('gemini_diagnosis', 'N/A'),
+            'detected_condition': result.get('detected_condition', 'N/A'),
+            'confidence_level': result.get('confidence_level', 'low'),
+            'gemini_confidence': result.get('gemini_confidence', 0),
+            'severity': result.get('severity', 'unknown'),
+            'gemini_agrees': result.get('cnn_agrees', False),
+            'analysis_notes': result.get('analysis_notes', ''),
+            'gemini_suggestion': result.get('recommendation', 'Consult a medical professional.'),
+            'error': None
+        }
+    
+    except json.JSONDecodeError as e:
+        print(f"Gemini JSON parse error: {e}")
+        return {'error': 'Failed to parse Gemini response', 'is_medical': True}
+    except Exception as e:
+        print(f"Gemini API error: {e}")
+        return {'error': f'Gemini API error: {str(e)}', 'is_medical': True}
+
+
+def init_db():
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS training_status(
+            id INTEGER PRIMARY KEY,
+            is_trained INTEGER DEFAULT 0,
+            trained_at TEXT,
+            available_classes TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def allowed_file(filename):
+    """Check if file extension is allowed"""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def get_model():
+    """Load model once and cache it (singleton pattern)"""
+    global _model_cache
+    try:
+        if _model_cache is None:
+            if not os.path.exists("model.h5"):
+                return None
+            _model_cache = tf.keras.models.load_model("model.h5")
+        return _model_cache
+    except Exception as e:
+        print(f"Error loading model: {str(e)}")
+        return None
+
+def get_training_status():
+    """Get training status from database"""
+    try:
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT is_trained, trained_at, available_classes FROM training_status WHERE id = 1")
+        result = cursor.fetchone()
+        conn.close()
+        return result
+    except Exception as e:
+        print(f"Error getting training status: {str(e)}")
+        return None
+
+def set_training_status(is_trained, available_classes):
+    """Update training status in database"""
+    try:
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO training_status (id, is_trained, trained_at, available_classes) VALUES (1, ?, ?, ?)",
+            (is_trained, datetime.now().isoformat(), ','.join(available_classes))
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Error setting training status: {str(e)}")
+
+
+@app.route('/', methods=['GET', 'POST'])
+def signup():
+    if request.method == 'POST':
+        try:
+            username = request.form.get('username', '').strip()
+            password = request.form.get('password', '').strip()
+
+            if not username or not password:
+                flash('Username and password are required', 'error')
+                return render_template('signup.html')
+
+            if len(password) < 6:
+                flash('Password must be at least 6 characters', 'error')
+                return render_template('signup.html')
+
+            conn = sqlite3.connect('users.db')
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT * FROM users WHERE username=?", (username,))
+            if cursor.fetchone():
+                flash('Username already exists', 'error')
+                conn.close()
+                return render_template('signup.html')
+
+            cursor.execute("INSERT INTO users VALUES (NULL, ?, ?)",
+                           (username, generate_password_hash(password)))
+            conn.commit()
+            conn.close()
+
+            flash('Account created successfully! Please sign in.', 'success')
+            return redirect(url_for('signin'))
+        except Exception as e:
+            flash(f'Error creating account: {str(e)}', 'error')
+            return render_template('signup.html')
+
+    return render_template('signup.html')
+
+
+@app.route('/signin', methods=['GET', 'POST'])
+def signin():
+    if request.method == 'POST':
+        try:
+            username = request.form.get('username', '').strip()
+            password = request.form.get('password', '').strip()
+
+            if not username or not password:
+                flash('Username and password are required', 'error')
+                return render_template('signin.html')
+
+            conn = sqlite3.connect('users.db')
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE username=?", (username,))
+            user = cursor.fetchone()
+            conn.close()
+
+            if user and check_password_hash(user[2], password):
+                session['username'] = username
+                flash('Welcome back!', 'success')
+                return redirect(url_for('home'))
+            else:
+                flash('Invalid username or password', 'error')
+        except Exception as e:
+            flash(f'Error during login: {str(e)}', 'error')
+
+    return render_template('signin.html')
+
+
+@app.route('/home')
+def home():
+    if 'username' not in session:
+        return redirect(url_for('signin'))
+    return render_template('home.html')
+
+
+@app.route('/detection', methods=['GET', 'POST'])
+def detection():
+    if 'username' not in session:
+        return redirect(url_for('signin'))
+
+    predicted_class = None
+    suggestion = None
+    image_path = None
+    error_msg = None
+    gemini_result = None
+    confidence = None
+
+    try:
+        model = get_model()
+        if model is None:
+            error_msg = "Model not trained yet. Please train the model first."
+            return render_template("detection.html",
+                                   predicted_class=None,
+                                   suggestion=None,
+                                   image_path=None,
+                                   error=error_msg,
+                                   confidence=None,
+                                   gemini=None)
+
+        if request.method == 'POST':
+            if 'image' not in request.files:
+                error_msg = "No image file provided"
+            else:
+                file = request.files['image']
+
+                if file.filename == '':
+                    error_msg = "No file selected"
+                elif not allowed_file(file.filename):
+                    error_msg = f"Invalid file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+                else:
+                    try:
+                        # Create user-specific upload directory with timestamp
+                        user_folder = os.path.join(UPLOAD_FOLDER, session['username'])
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        os.makedirs(user_folder, exist_ok=True)
+
+                        filename = secure_filename(f"{timestamp}_{file.filename}")
+                        image_path = os.path.join(user_folder, filename)
+                        
+                        # Validate file size before saving
+                        if len(file.stream.read()) > MAX_FILE_SIZE:
+                            file.stream.seek(0)
+                            error_msg = f"File too large. Maximum size: {MAX_FILE_SIZE / (1024*1024):.0f}MB"
+                        else:
+                            file.stream.seek(0)
+                            file.save(image_path)
+
+                            # Load and process image
+                            try:
+                                img = image.load_img(image_path, target_size=(150, 150))
+                                img = image.img_to_array(img) / 255.0
+                                img = np.expand_dims(img, axis=0)
+                            except Exception as e:
+                                error_msg = f"Error loading image: {str(e)}"
+                                os.remove(image_path) if os.path.exists(image_path) else None
+                                return render_template("detection.html",
+                                                       predicted_class=None,
+                                                       suggestion=None,
+                                                       image_path=None,
+                                                       error=error_msg,
+                                                       confidence=None,
+                                                       gemini=None)
+
+                            # Make prediction
+                            try:
+                                pred = model.predict(img, verbose=0)
+                                label = np.argmax(pred)
+                                confidence = float(np.max(pred)) * 100
+                            except Exception as e:
+                                error_msg = f"Error during prediction: {str(e)}"
+                                return render_template("detection.html",
+                                                       predicted_class=None,
+                                                       suggestion=None,
+                                                       image_path=None,
+                                                       error=error_msg,
+                                                       confidence=None,
+                                                       gemini=None)
+
+                            # Get available classes from database
+                            training_status = get_training_status()
+                            if training_status and training_status[2]:
+                                available_classes = training_status[2].split(',')
+                            else:
+                                available_classes = discover_classes()
+
+                            if 0 <= label < len(available_classes):
+                                predicted_class = available_classes[label]
+                                suggestion = get_suggestion(predicted_class)
+                            else:
+                                error_msg = "Error: Invalid prediction index"
+
+                            # --- Gemini AI Validation & Second Opinion ---
+                            try:
+                                gemini_result = gemini_validate_and_analyze(
+                                    image_path, predicted_class, confidence
+                                )
+
+                                if gemini_result.get('is_medical') is False:
+                                    # Image is NOT medical — reject the CNN prediction
+                                    predicted_class = None
+                                    suggestion = None
+                                    confidence = None
+                                    error_msg = (
+                                        f"⚠️ This does not appear to be a medical image. "
+                                        f"Detected: {gemini_result.get('image_type', 'non-medical image')}. "
+                                        f"{gemini_result.get('rejection_reason', 'Please upload a breast, liver, or skin medical image.')}"
+                                    )
+                                    gemini_result = None  # Don't show AI analysis for non-medical
+                            except Exception as e:
+                                print(f"Gemini validation error: {str(e)}")
+                                # Continue without Gemini validation if it fails
+                                gemini_result = {'error': 'AI validation unavailable'}
+
+                            # Return relative path for frontend
+                            image_path = image_path.replace('\\', '/').replace(UPLOAD_FOLDER, '/static/uploads')
+
+                    except Exception as e:
+                        error_msg = f"Error processing image: {str(e)}"
+                        print(f"Image processing error: {str(e)}")
+
+    except Exception as e:
+        error_msg = f"Detection error: {str(e)}"
+        print(f"Detection route error: {str(e)}")
+
+    return render_template("detection.html",
+                           predicted_class=predicted_class,
+                           suggestion=suggestion,
+                           image_path=image_path,
+                           error=error_msg,
+                           confidence=confidence,
+                           gemini=gemini_result)
+
+
+
+@app.route('/train')
+def train():
+    global _model_cache, _training_in_progress
+
+    if _training_in_progress:
+        return render_template("train.html", logs=["Training already in progress..."])
+
+    logs = []
+    force = request.args.get('force', '0') == '1'
+
+    try:
+        # Check if already trained (skip if force retrain)
+        if not force:
+            training_status = get_training_status()
+            if training_status and training_status[0]:
+                # Check if all graph files exist from previous training
+                graphs_exist = all(os.path.exists(f"static/{g}") for g in [
+                    'accuracy.png', 'loss.png', 'confusion_matrix.png',
+                    'metrics.png', 'overall_stats.png', 'class_accuracy.png'
+                ])
+                return render_template("train.html",
+                    logs=["✓ Model is already trained and ready for predictions."],
+                    already_trained=True,
+                    show_graphs=graphs_exist)
+
+        # Clear stale cache and status when retraining
+        _model_cache = None
+        set_training_status(0, [])
+        _training_in_progress = True
+
+        IMAGE_SIZE = (150, 150)
+        train_path = "train"
+        test_path = "test"
+
+        # Check paths exist
+        if not os.path.exists(train_path):
+            logs.append(f"ERROR: Training directory '{train_path}' not found")
+            return render_template("train.html", logs=logs)
+
+        if not os.path.exists(test_path):
+            logs.append(f"ERROR: Test directory '{test_path}' not found")
+            return render_template("train.html", logs=logs)
+
+        # Dynamically discover classes from folder names on disk
+        available_classes = discover_classes(train_path)
+
+        logs.append(f"Classes Found ({len(available_classes)}): {available_classes}")
+
+        if not available_classes:
+            logs.append("ERROR: No class folders found in training directory!")
+            return render_template("train.html", logs=logs)
+
+        class_labels = {c: i for i, c in enumerate(available_classes)}
+
+        def load_data(path):
+            images, labels = [], []
+            error_count = 0
+
+            for category in available_classes:
+                category_path = os.path.join(path, category)
+
+                if not os.path.exists(category_path):
+                    continue
+
+                for file in os.listdir(category_path):
+                    img_path = os.path.join(category_path, file)
+
+                    try:
+                        img = cv2.imread(img_path)
+
+                        if img is None:
+                            continue
+
+                        img = cv2.resize(img, IMAGE_SIZE)
+                        images.append(img)
+                        labels.append(class_labels[category])
+
+                    except Exception as e:
+                        error_count += 1
+                        continue
+
+            if error_count > 0:
+                logs.append(f"Warning: {error_count} images failed to load")
+
+            return np.array(images) / 255.0, np.array(labels)
+
+        logs.append("Loading training data...")
+        train_images, train_labels = load_data(train_path)
+        logs.append("Loading test data...")
+        test_images, test_labels = load_data(test_path)
+
+        logs.append(f"Train size: {len(train_images)}")
+        logs.append(f"Test size: {len(test_images)}")
+
+        if len(train_images) == 0:
+            logs.append("ERROR: No training images found!")
+            return render_template("train.html", logs=logs)
+
+        logs.append("Building model...")
+        model = models.Sequential([
+            layers.Conv2D(32, (3, 3), activation='relu', input_shape=(150, 150, 3)),
+            layers.MaxPooling2D(),
+            layers.Conv2D(64, (3, 3), activation='relu'),
+            layers.MaxPooling2D(),
+            layers.Flatten(),
+            layers.Dense(128, activation='relu'),
+            layers.Dropout(0.3),
+            layers.Dense(len(available_classes), activation='softmax')
+        ])
+
+        model.compile(optimizer='adam',
+                      loss='sparse_categorical_crossentropy',
+                      metrics=['accuracy'])
+
+        logs.append("Training model (10 epochs)...")
+        try:
+            history = model.fit(train_images, train_labels,
+                                epochs=10,
+                                batch_size=32,
+                                validation_split=0.2,
+                                verbose=0)
+        except Exception as e:
+            logs.append(f"ERROR during model training: {str(e)}")
+            _training_in_progress = False
+            return render_template("train.html", logs=logs)
+
+        logs.append("Saving model...")
+        try:
+            model.save("model.h5")
+            with open("model.json", "w") as f:
+                f.write(model.to_json())
+        except Exception as e:
+            logs.append(f"ERROR saving model: {str(e)}")
+            _training_in_progress = False
+            return render_template("train.html", logs=logs)
+
+        # Clear cached model so it reloads
+        _model_cache = None
+
+        # Get predictions
+        try:
+            preds = model.predict(test_images, verbose=0)
+            y_pred = np.argmax(preds, axis=1)
+        except Exception as e:
+            logs.append(f"ERROR during prediction: {str(e)}")
+            _training_in_progress = False
+            return render_template("train.html", logs=logs)
+
+        logs.append("Generating detailed training graphs...")
+
+        # ===== GRAPH 1: ACCURACY PLOT =====
+        plt.figure(figsize=(10, 6))
+        plt.plot(history.history['accuracy'], linewidth=2.5, label='Train Accuracy', marker='o')
+        plt.plot(history.history['val_accuracy'], linewidth=2.5, label='Validation Accuracy', marker='s')
+        plt.title("Model Accuracy Over Epochs", fontsize=14, fontweight='bold')
+        plt.xlabel("Epoch", fontsize=12)
+        plt.ylabel("Accuracy", fontsize=12)
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig("static/accuracy.png", dpi=100)
+        plt.close()
+        logs.append("✓ Graph 1: Accuracy plot saved")
+
+        # ===== GRAPH 2: LOSS PLOT =====
+        plt.figure(figsize=(10, 6))
+        plt.plot(history.history['loss'], linewidth=2.5, label='Train Loss', marker='o', color='#ff6b6b')
+        plt.plot(history.history['val_loss'], linewidth=2.5, label='Validation Loss', marker='s', color='#ee5a6f')
+        plt.title("Model Loss Over Epochs", fontsize=14, fontweight='bold')
+        plt.xlabel("Epoch", fontsize=12)
+        plt.ylabel("Loss", fontsize=12)
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig("static/loss.png", dpi=100)
+        plt.close()
+        logs.append("✓ Graph 2: Loss plot saved")
+
+        # ===== GRAPH 3: CONFUSION MATRIX =====
+        cm = confusion_matrix(test_labels, y_pred)
+        plt.figure(figsize=(12, 10))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=available_classes, yticklabels=available_classes, cbar_kws={'label': 'Count'})
+        plt.title("Confusion Matrix - Detailed Predictions", fontsize=14, fontweight='bold')
+        plt.ylabel("True Label", fontsize=12)
+        plt.xlabel("Predicted Label", fontsize=12)
+        plt.xticks(rotation=45, ha='right')
+        plt.yticks(rotation=0)
+        plt.tight_layout()
+        plt.savefig("static/confusion_matrix.png", dpi=100)
+        plt.close()
+        logs.append("✓ Graph 3: Confusion matrix saved")
+
+        # ===== GRAPH 4: PER-CLASS METRICS =====
+        precision_scores = precision_score(test_labels, y_pred, average=None, zero_division=0)
+        recall_scores = recall_score(test_labels, y_pred, average=None, zero_division=0)
+        f1_scores = f1_score(test_labels, y_pred, average=None, zero_division=0)
+
+        x = np.arange(len(available_classes))
+        width = 0.25
+
+        plt.figure(figsize=(14, 6))
+        plt.bar(x - width, precision_scores, width, label='Precision', alpha=0.8, color='#3b82f6')
+        plt.bar(x, recall_scores, width, label='Recall', alpha=0.8, color='#10b981')
+        plt.bar(x + width, f1_scores, width, label='F1-Score', alpha=0.8, color='#f59e0b')
+
+        plt.title("Per-Class Performance Metrics", fontsize=14, fontweight='bold')
+        plt.xlabel("Classes", fontsize=12)
+        plt.ylabel("Score", fontsize=12)
+        plt.xticks(x, available_classes, rotation=45, ha='right')
+        plt.ylim([0, 1.1])
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3, axis='y')
+        plt.tight_layout()
+        plt.savefig("static/metrics.png", dpi=100)
+        plt.close()
+        logs.append("✓ Graph 4: Per-class metrics saved")
+
+        # ===== GRAPH 5: OVERALL STATISTICS =====
+        overall_precision = precision_score(test_labels, y_pred, average='weighted', zero_division=0)
+        overall_recall = recall_score(test_labels, y_pred, average='weighted', zero_division=0)
+        overall_f1 = f1_score(test_labels, y_pred, average='weighted', zero_division=0)
+        overall_accuracy = np.mean(y_pred == test_labels)
+
+        metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score']
+        values = [overall_accuracy, overall_precision, overall_recall, overall_f1]
+        colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444']
+
+        plt.figure(figsize=(10, 6))
+        bars = plt.bar(metrics, values, color=colors, alpha=0.7, edgecolor='black', linewidth=1.5)
+        plt.title("Overall Model Performance", fontsize=14, fontweight='bold')
+        plt.ylabel("Score", fontsize=12)
+        plt.ylim([0, 1.1])
+        
+        # Add value labels on bars
+        for bar, val in zip(bars, values):
+            height = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{val:.2%}', ha='center', va='bottom', fontsize=11, fontweight='bold')
+        
+        plt.grid(True, alpha=0.3, axis='y')
+        plt.tight_layout()
+        plt.savefig("static/overall_stats.png", dpi=100)
+        plt.close()
+        logs.append("✓ Graph 5: Overall statistics saved")
+
+        # ===== GRAPH 6: ACCURACY PER CLASS =====
+        class_accuracies = []
+        for i, cls in enumerate(available_classes):
+            mask = test_labels == i
+            if np.sum(mask) > 0:
+                acc = np.mean(y_pred[mask] == test_labels[mask])
+                class_accuracies.append(acc)
+            else:
+                class_accuracies.append(0)
+
+        plt.figure(figsize=(12, 6))
+        bars = plt.barh(available_classes, class_accuracies, color='#8b5cf6', alpha=0.7, edgecolor='black', linewidth=1.5)
+        plt.title("Per-Class Accuracy", fontsize=14, fontweight='bold')
+        plt.xlabel("Accuracy", fontsize=12)
+        plt.xlim([0, 1.05])
+        
+        # Add percentage labels
+        for i, (bar, acc) in enumerate(zip(bars, class_accuracies)):
+            plt.text(acc + 0.02, i, f'{acc:.1%}', va='center', fontsize=10, fontweight='bold')
+        
+        plt.grid(True, alpha=0.3, axis='x')
+        plt.tight_layout()
+        plt.savefig("static/class_accuracy.png", dpi=100)
+        plt.close()
+        logs.append("✓ Graph 6: Per-class accuracy saved")
+
+        # Save training status to database
+        set_training_status(1, available_classes)
+
+        logs.append("✓ Model trained successfully!")
+
+    except Exception as e:
+        logs.append(f"ERROR during training: {str(e)}")
+    finally:
+        _training_in_progress = False
+
+    return render_template("train.html", logs=logs, show_graphs=True)
+
+
+
+@app.route('/model_info')
+def model_info():
+    if 'username' not in session:
+        return redirect(url_for('signin'))
+
+    info = {
+        'model_exists': os.path.exists("model.h5") and os.path.exists("model.json"),
+        'training_status': get_training_status()
+    }
+    return render_template('model_info.html', info=info)
+
+
+@app.route('/logout')
+def logout():
+    session.pop('username', None)
+    flash('You have been logged out', 'success')
+    return redirect(url_for('signin'))
+
+
+@app.errorhandler(413)
+def too_large(e):
+    flash(f'File too large. Maximum size: {MAX_FILE_SIZE / (1024*1024):.0f}MB', 'error')
+    return redirect(url_for('detection'))
+
+
+if __name__ == '__main__':
+    app.run(debug=False, threaded=True)
+
+```
+
+`README.md`
+
+```markdown
+# 🧬 Predictive Oncology: Deep Learning-Based Multi-Cancer Detection
+
+A Flask web application that combines **Convolutional Neural Networks (CNN)** with **Google Gemini AI** to detect multiple cancer types from medical images — including **Breast**, **Liver**, and **Skin** cancers.
+
+![Python](https://img.shields.io/badge/Python-3.9+-blue?logo=python)
+![TensorFlow](https://img.shields.io/badge/TensorFlow-2.x-orange?logo=tensorflow)
+![Flask](https://img.shields.io/badge/Flask-2.3-green?logo=flask)
+![Gemini](https://img.shields.io/badge/Gemini_AI-2.5_Pro-purple?logo=google)
+
+---
+
+## 📋 Table of Contents
+
+- [Features](#-features)
+- [How It Works — Dual AI Pipeline](#-how-it-works--dual-ai-pipeline)
+- [Supported Cancer Classes](#-supported-cancer-classes)
+- [Project Structure](#-project-structure)
+- [Setup — Local (Conda)](#-setup--local-conda-recommended)
+- [Setup — Local (venv / pip)](#-setup--local-venv--pip)
+- [Setup — Docker](#-setup--docker)
+- [Usage Guide](#-usage-guide)
+- [Dataset Structure](#-dataset-structure)
+- [API Routes](#-api-routes)
+- [Training Details](#-training-details)
+- [Gemini AI Configuration](#-gemini-ai-configuration)
+- [Troubleshooting](#-troubleshooting)
+- [Security Notes](#-security-notes)
+
+---
+
+## ✨ Features
+
+| Feature | Description |
+|---|---|
+| 🔐 **User Authentication** | Secure signup/signin with bcrypt password hashing |
+| 🧠 **CNN Model Training** | Train a CNN directly from the web UI with real-time logs |
+| 🔬 **Cancer Detection** | Upload an image and get a prediction with confidence score |
+| 🤖 **Gemini AI Second Opinion** | Google Gemini 2.5 Pro validates the image and provides an independent diagnosis |
+| 🚫 **Non-Medical Image Rejection** | Gemini automatically detects and rejects non-medical images (selfies, objects, etc.) |
+| 📊 **6 Training Graphs** | Accuracy, Loss, Confusion Matrix, Per-Class Metrics, Overall Stats, Per-Class Accuracy |
+| 🔄 **Retrain Support** | Retrain the model anytime with the click of a button |
+| 📁 **Dynamic Classes** | Automatically discovers cancer classes from your dataset folders |
+| 📋 **Model Info** | View model architecture, training status, and metadata |
+| ⏳ **Loading Animations** | DNA helix loader with step-by-step progress indicators during analysis |
+| 📱 **Responsive Design** | Works on desktop, tablet, and mobile screens |
+
+---
+
+## 🔬 How It Works — Dual AI Pipeline
+
+When you upload a medical image, the system runs **two independent analyses**:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    User Uploads Image                    │
+└─────────────────────┬───────────────────────────────────┘
+                      │
+          ┌───────────┴───────────┐
+          ▼                       ▼
+┌─────────────────┐    ┌──────────────────────┐
+│   CNN Model     │    │   Gemini 2.5 Pro AI  │
+│   (TensorFlow)  │    │   (Google API)       │
+├─────────────────┤    ├──────────────────────┤
+│ • Classification│    │ • Image Validation   │
+│ • Confidence %  │    │ • Medical Diagnosis  │
+│ • Class Label   │    │ • Severity Rating    │
+└────────┬────────┘    │ • Agreement Check    │
+         │             │ • Recommendations    │
+         │             └──────────┬───────────┘
+         └───────────┬────────────┘
+                     ▼
+         ┌───────────────────────┐
+         │   Combined Results    │
+         │   • CNN Prediction    │
+         │   • AI Second Opinion │
+         │   • Severity Badge    │
+         │   • Recommendations   │
+         └───────────────────────┘
+```
+
+### Step 1 — Image Validation (Gemini)
+Gemini checks if the uploaded image is a valid medical image. Non-medical images (selfies, food, landscapes, screenshots) are **automatically rejected** with a clear explanation.
+
+### Step 2 — CNN Classification
+The trained CNN model classifies the image into one of the supported cancer classes with a confidence percentage.
+
+### Step 3 — AI Second Opinion (Gemini)
+Gemini independently analyzes the image and provides:
+- Its own diagnosis and detected condition
+- Confidence level (0–100%)
+- Severity rating (normal / low / moderate / high / critical)
+- Whether it agrees or disagrees with the CNN prediction
+- Detailed analysis notes with clinical observations
+- Specific medical recommendations
+
+---
+
+## 🩺 Supported Cancer Classes
+
+| Organ | Condition | Severity |
+|-------|-----------|----------|
+| 🩺 Breast | Normal | Healthy |
+| ⚠️ Breast | Benign Tumor | Low — monitor regularly |
+| 🔴 Breast | Malignant Tumor | High — consult oncologist |
+| 🟢 Liver | Healthy | Healthy |
+| 🟡 Liver | Hepatic Steatosis (Fatty Liver) | Moderate — lifestyle changes |
+| 🧴 Skin | Healthy | Healthy |
+| ⚠️ Skin | Dermatofibroma | Low — benign condition |
+| 🔴 Skin | Seborrheic Keratosis | Low — non-cancerous growth |
+
+---
+
+## 📂 Project Structure
+
+```
+Predictive Oncology Deep Learning-Based Multi-Cancer Detection/
+│
+├── app.py                  # Main Flask app (routes, CNN training, Gemini integration)
+├── requirements.txt        # Python dependencies
+├── .env                    # Environment variables (API keys, secrets)
+├── .env.example            # Template for .env
+├── .gitignore              # Git ignore rules
+├── Dockerfile              # Docker container configuration
+├── docker-compose.yml      # Docker Compose orchestration
+├── README.md               # This file
+│
+├── model.h5                # Trained CNN model (generated after training)
+├── model.json              # Model architecture JSON (generated)
+├── users.db                # SQLite database (auto-created on first run)
+│
+├── static/                 # Static assets
+│   ├── uploads/            # User-uploaded images (per-user timestamped folders)
+│   ├── accuracy.png        # Training graph — accuracy (generated)
+│   ├── loss.png            # Training graph — loss (generated)
+│   ├── confusion_matrix.png
+│   ├── metrics.png
+│   ├── overall_stats.png
+│   └── class_accuracy.png
+│
+├── templates/              # Jinja2 HTML templates
+│   ├── home.html           # Dashboard with feature cards
+│   ├── signup.html         # User registration
+│   ├── signin.html         # User login
+│   ├── detection.html      # Image upload, CNN + Gemini results
+│   ├── train.html          # Model training page with 6 graphs
+│   └── model_info.html     # Model architecture & status info
+│
+├── train/                  # Training dataset (one folder per class)
+│   ├── Breast Normal/
+│   ├── Breast Benign/
+│   ├── Breast Malignant/
+│   ├── Healthy Liver/
+│   ├── Liver Hepatic_Steatosis/
+│   ├── Skin Dermatofibroma/
+│   ├── Skin Healthy/
+│   └── Skin Seborrheic_Keratosis/
+│
+└── test/                   # Test dataset (same structure as train/)
+```
+
+---
+
+## 🐍 Setup — Local (Conda) ⭐ Recommended
+
+### Prerequisites
+- [Anaconda](https://www.anaconda.com/download) or [Miniconda](https://docs.conda.io/en/latest/miniconda.html) installed
+- A [Google Gemini API key](https://aistudio.google.com/apikey) (free tier available)
+- GPU support (optional but recommended for training)
+
+### Step-by-Step
+
+```bash
+# 1. Open Anaconda Prompt
+
+# 2. Create conda environment
+conda create -n finalyearproject python=3.9 -y
+
+# 3. Activate environment
+conda activate finalyearproject
+
+# 4. Navigate to project directory
+cd "D:\finalYearProject\Predictive Oncology Deep Learning-Based Multi-Cancer Detection"
+
+# 5. Install dependencies
+pip install -r requirements.txt
+
+# 6. Set up environment variables
+copy .env.example .env
+# Edit .env and add your Gemini API key:
+#   GEMINI_API_KEY=your-api-key-here
+
+# 7. Run the application
+python app.py
+```
+
+### Access
+Open your browser and go to: **http://localhost:5000**
+
+### Quick Commands (after initial setup)
+```bash
+conda activate finalyearproject
+cd "D:\finalYearProject\Predictive Oncology Deep Learning-Based Multi-Cancer Detection"
+python app.py
+```
+
+---
+
+## 🐍 Setup — Local (venv / pip)
+
+### Prerequisites
+- Python 3.9 – 3.11 installed
+- `pip` package manager
+
+### Step-by-Step
+
+```bash
+# 1. Navigate to project directory
+cd "Predictive Oncology Deep Learning-Based Multi-Cancer Detection"
+
+# 2. Create virtual environment
+python -m venv venv
+
+# 3. Activate virtual environment
+# Windows:
+venv\Scripts\activate
+# macOS/Linux:
+source venv/bin/activate
+
+# 4. Install dependencies
+pip install -r requirements.txt
+
+# 5. Set up environment variables
+copy .env.example .env
+# Edit .env and add your Gemini API key
+
+# 6. Run the application
+python app.py
+```
+
+### Access
+Open your browser and go to: **http://localhost:5000**
+
+---
+
+## 🐳 Setup — Docker
+
+### Prerequisites
+- [Docker Desktop](https://www.docker.com/products/docker-desktop) installed and running
+
+### Build & Run
+
+```bash
+# Navigate to project directory
+cd "Predictive Oncology Deep Learning-Based Multi-Cancer Detection"
+
+# Build and start (first time — may take 5-10 minutes)
+docker-compose up --build
+
+# Run in background (detached mode)
+docker-compose up -d --build
+
+# View logs
+docker-compose logs -f
+
+# Stop
+docker-compose down
+```
+
+### Access
+Open your browser and go to: **http://localhost:5000**
+
+### Docker Useful Commands
+
+```bash
+# View running containers
+docker ps
+
+# Enter container shell (for debugging)
+docker exec -it <container_name> bash
+
+# Rebuild after code changes
+docker-compose up --build
+
+# Stop and remove everything (including volumes)
+docker-compose down -v
+```
+
+---
+
+## 📖 Usage Guide
+
+### 1. Create an Account
+- Visit `http://localhost:5000`
+- Choose a username and password (min 6 characters)
+- Click **📝 Register Account**
+
+### 2. Sign In
+- Go to the **Sign In** page
+- Enter your credentials
+- Click **🔐 Sign In**
+
+### 3. Train the Model
+- Click **🧠 Train Model** in the sidebar
+- Click **Start Training**
+- Wait for training to complete (~2–5 minutes depending on hardware)
+- 6 training graphs will be generated and displayed
+- To retrain later, click **🔄 Retrain Model**
+
+### 4. Detect Cancer
+- Click **🔬 Detection** in the sidebar
+- Upload a medical image (PNG, JPG, JPEG, GIF, BMP — max 5MB)
+- Click **🧬 Analyze Image**
+- A loading animation shows the dual-analysis progress
+- View combined results:
+  - **CNN Model Analysis** — predicted class, confidence bar, recommendation
+  - **Gemini AI Second Opinion** — independent diagnosis, severity, agreement badge, analysis notes, AI recommendation
+
+### 5. View Model Info
+- Click **📋 Model Info** to see:
+  - Model training status and last trained timestamp
+  - Discovered cancer classes
+  - CNN architecture details
+  - Supported conditions and dataset structure
+
+---
+
+## 📁 Dataset Structure
+
+The model auto-discovers classes from the `train/` folder. Each subfolder name becomes a class label.
+
+```
+train/
+├── Breast Normal/               # Healthy breast tissue images
+├── Breast Benign/               # Non-cancerous breast tumor images
+├── Breast Malignant/            # Cancerous breast tumor images
+├── Healthy Liver/               # Normal liver scan images
+├── Liver Hepatic_Steatosis/     # Fatty liver images
+├── Skin Dermatofibroma/         # Benign skin condition images
+├── Skin Healthy/                # Normal skin images
+└── Skin Seborrheic_Keratosis/   # Non-cancerous skin growth images
+
+test/
+└── (same folder structure with test images)
+```
+
+> **Tip:** To add a new cancer type, simply create a new folder in both `train/` and `test/` with labeled images. The model will automatically detect and train on it.
+
+---
+
+## 🔌 API Routes
+
+| Method | Route | Auth | Description |
+|--------|-------|------|-------------|
+| GET/POST | `/` | ❌ | Sign up page |
+| GET/POST | `/signin` | ❌ | Sign in page |
+| GET | `/home` | ✅ | Dashboard |
+| GET/POST | `/detection` | ✅ | Upload image → CNN + Gemini analysis |
+| GET | `/train` | ❌ | Train model page |
+| GET | `/train?force=1` | ❌ | Force retrain the model |
+| GET | `/model_info` | ✅ | View model status & architecture |
+| GET | `/logout` | ✅ | Logout and clear session |
+
+---
+
+## 🧠 Training Details
+
+### CNN Model Architecture
+```
+Input (150×150×3 RGB)
+  → Conv2D(32, 3×3, ReLU) → MaxPooling2D
+  → Conv2D(64, 3×3, ReLU) → MaxPooling2D
+  → Flatten
+  → Dense(128, ReLU)
+  → Dropout(0.3)
+  → Dense(num_classes, Softmax)
+```
+
+### Training Configuration
+| Parameter | Value |
+|-----------|-------|
+| Image Size | 150 × 150 px |
+| Normalization | Pixel values / 255.0 |
+| Epochs | 10 |
+| Batch Size | 32 |
+| Validation Split | 20% |
+| Optimizer | Adam |
+| Loss Function | Sparse Categorical Crossentropy |
+| Dropout | 30% |
+
+### Generated Graphs (after training)
+1. 📈 **Accuracy** — Train vs Validation accuracy over epochs
+2. 📉 **Loss** — Train vs Validation loss over epochs
+3. 🎯 **Confusion Matrix** — True vs Predicted labels heatmap
+4. 📊 **Per-Class Metrics** — Precision, Recall, F1-Score per class
+5. 🏆 **Overall Performance** — Weighted Accuracy, Precision, Recall, F1
+6. ✅ **Per-Class Accuracy** — Individual class accuracy horizontal bars
+
+---
+
+## 🤖 Gemini AI Configuration
+
+The Gemini integration uses **Gemini 2.5 Pro** for medical image analysis.
+
+### Getting an API Key
+1. Visit [Google AI Studio](https://aistudio.google.com/apikey)
+2. Sign in with your Google account
+3. Click **Create API Key**
+4. Copy the key and paste it in your `.env` file:
+   ```
+   GEMINI_API_KEY=your-api-key-here
+   ```
+
+### What Gemini Does
+| Step | Function |
+|------|----------|
+| **Validation** | Checks if the image is a valid medical image |
+| **Rejection** | Rejects non-medical images with an explanation |
+| **Diagnosis** | Provides an independent AI diagnosis |
+| **Agreement** | Compares its diagnosis with the CNN prediction |
+| **Severity** | Rates severity: normal / low / moderate / high / critical |
+| **Notes** | Describes specific visual patterns observed |
+| **Recommendation** | Provides targeted medical recommendation |
+
+### Fallback Behavior
+- If the Gemini API key is not configured, the system works with **CNN-only mode**
+- If the Gemini API call fails, the CNN result is still shown with a warning badge
+- Non-medical images are only rejected when Gemini is active
+
+---
+
+## 🔧 Troubleshooting
+
+### ❌ `ModuleNotFoundError: No module named 'flask'`
+```bash
+# Make sure your environment is activated
+conda activate finalyearproject   # or: venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### ❌ `SyntaxError` or app won't start
+```bash
+# Verify Python version (3.9+ required)
+python --version
+
+# Check for syntax errors
+python -m py_compile app.py
+```
+
+### ❌ Model not found / "Train the model first"
+- Go to `/train` and click **Start Training**
+- Wait for training to complete before using Detection
+
+### ❌ Training finds 0 classes
+- Ensure `train/` folder exists with subfolders containing images
+- Each subfolder name = class name
+
+### ❌ File upload rejected
+- Allowed formats: PNG, JPG, JPEG, GIF, BMP
+- Max size: 5MB
+
+### ❌ Gemini API errors
+- Verify your API key in `.env` is correct
+- Check that you have internet connectivity
+- The free tier has rate limits — wait and retry if you hit them
+
+### ❌ "Non-medical image" false positive
+- Gemini may occasionally reject valid medical images of unusual formats
+- Try a different image or temporarily disable Gemini by removing the API key
+
+### ❌ Page hangs during training
+- Training takes ~2–5 minutes depending on dataset size and hardware
+- Do not refresh the page during training
+- Check the terminal for progress logs
+
+### ❌ GPU not detected (TensorFlow)
+```bash
+# Check if GPU is available
+python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
+
+# Install GPU support (if needed)
+pip install tensorflow[and-cuda]
+```
+
+---
+
+## 🔒 Security Notes
+
+- Change `SECRET_KEY` in `.env` before deploying to production
+- **Never commit `.env`** to version control (it's in `.gitignore`)
+- The Gemini API key should be kept private
+- Use HTTPS in production
+- Consider a production WSGI server (Gunicorn/Waitress) for deployment
+- Uploaded images are stored per-user with timestamps
+
+---
+
+## 📦 Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| Flask 2.3 | Web framework |
+| TensorFlow 2.13 | CNN model training and inference |
+| OpenCV | Image loading and preprocessing |
+| NumPy | Array operations |
+| Matplotlib | Training graph generation |
+| Seaborn | Confusion matrix heatmap |
+| scikit-learn | Metrics (precision, recall, F1) |
+| google-generativeai | Gemini AI API client |
+| Pillow | Image handling for Gemini |
+| python-dotenv | Environment variable loading |
+| Werkzeug | Password hashing & file security |
+
+---
+
+## 📄 License
+
+This project is for **educational and research purposes** only.
+
+> ⚠️ **Disclaimer:** The predictions made by this system are NOT a substitute for professional medical diagnosis. Always consult qualified healthcare professionals and licensed oncologists for actual medical diagnosis and treatment decisions.
+
+```
+
+`requirements.txt`
+
+```
+Flask==2.3.3
+numpy==1.24.3
+tensorflow==2.13.0
+opencv-python==4.8.0.76
+matplotlib==3.7.2
+scikit-learn==1.3.0
+seaborn==0.12.2
+Werkzeug==2.3.7
+python-dotenv==1.0.0
+google-generativeai>=0.8.0
+Pillow>=10.0.0
+
+```
+
+`SETUP_ANACONDA.md`
+
+```markdown
+# 🐍 Setup Guide — Anaconda / Miniconda
+
+Complete step-by-step guide to set up and run the **Predictive Oncology Multi-Cancer Detection System** using Anaconda or Miniconda.
+
+---
+
+## 📋 Prerequisites
+
+Before starting, make sure you have:
+
+1. **Anaconda** or **Miniconda** installed
+   - Download Anaconda: https://www.anaconda.com/download
+   - Download Miniconda (lightweight): https://docs.conda.io/en/latest/miniconda.html
+2. **Git** (optional, for cloning the repo)
+3. **Internet connection** (for installing packages and Gemini AI API)
+4. **GPU** (optional but recommended for faster model training)
+
+---
+
+## Phase 1: Install Anaconda
+
+### If Anaconda is NOT installed yet:
+
+1. Download the **Anaconda Installer** from https://www.anaconda.com/download
+2. Run the installer
+3. During installation:
+   - ✅ Check **"Add Anaconda to my PATH environment variable"** (recommended)
+   - ✅ Check **"Register Anaconda as my default Python"**
+4. Complete the installation
+5. Restart your terminal / command prompt
+
+### Verify Installation
+
+Open **Anaconda Prompt** (search in Start Menu) and run:
+
+```bash
+conda --version
+```
+
+Expected output: `conda 24.x.x` (or similar)
+
+---
+
+## Phase 2: Create the Conda Environment
+
+Open **Anaconda Prompt** and run the following commands:
+
+```bash
+# Create a new environment named 'finalyearproject' with Python 3.9
+conda create -n finalyearproject python=3.9 -y
+```
+
+> ⚠️ **Why Python 3.9?** TensorFlow 2.13 has the best compatibility with Python 3.9. Newer versions may have issues with some dependencies.
+
+### Activate the Environment
+
+```bash
+conda activate finalyearproject
+```
+
+You should see `(finalyearproject)` at the beginning of your prompt:
+```
+(finalyearproject) C:\Users\YourName>
+```
+
+> 💡 **Important:** You must activate this environment **every time** you open a new terminal to work on this project.
+
+---
+
+## Phase 3: Navigate to the Project Directory
+
+```bash
+cd "D:\finalYearProject\Predictive Oncology Deep Learning-Based Multi-Cancer Detection"
+```
+
+If your project is in a different location, adjust the path accordingly.
+
+### Verify you're in the right directory:
+
+```bash
+dir app.py
+```
+
+You should see `app.py` listed. If not, you're in the wrong directory.
+
+---
+
+## Phase 4: Install Python Dependencies
+
+With the conda environment activated and in the project directory:
+
+```bash
+pip install -r requirements.txt
+```
+
+This installs all required packages:
+- Flask (web framework)
+- TensorFlow (deep learning)
+- OpenCV (image processing)
+- NumPy, Matplotlib, Seaborn (data & visualization)
+- scikit-learn (metrics)
+- google-generativeai (Gemini AI)
+- Pillow (image handling)
+- python-dotenv (environment variables)
+
+### Verify Installation
+
+```bash
+python -c "import flask; import tensorflow; import cv2; print('All packages installed successfully!')"
+```
+
+> ⏳ This step may take **5–10 minutes** depending on your internet speed, especially for TensorFlow.
+
+---
+
+## Phase 5: Configure Environment Variables
+
+### Option A: Copy the template (recommended)
+
+```bash
+copy .env.example .env
+```
+
+### Option B: Create manually
+
+Create a file named `.env` in the project root with:
+
+```env
+# Flask Configuration
+SECRET_KEY=your-secret-key-change-this-in-production
+FLASK_ENV=development
+FLASK_DEBUG=False
+
+# Database
+DATABASE_URL=sqlite:///users.db
+
+# Upload Settings
+MAX_UPLOAD_SIZE_MB=5
+ALLOWED_EXTENSIONS=png,jpg,jpeg,gif,bmp
+
+# Gemini AI API Key (get from https://aistudio.google.com/apikey)
+GEMINI_API_KEY=your-gemini-api-key-here
+```
+
+### Get a Gemini API Key (Required for AI Second Opinion)
+
+1. Visit https://aistudio.google.com/apikey
+2. Sign in with your Google account
+3. Click **"Create API Key"**
+4. Copy the key
+5. Open `.env` and replace `your-gemini-api-key-here` with your actual key
+
+> 💡 The app works **without** a Gemini API key, but the AI second opinion and non-medical image rejection features will be disabled.
+
+---
+
+## Phase 6: Verify the Dataset
+
+Ensure your training and test data folders exist:
+
+```bash
+dir train
+dir test
+```
+
+You should see folders like:
+```
+Breast Benign/
+Breast Malignant/
+Breast Normal/
+Healthy Liver/
+Liver Hepatic_Steatosis/
+Skin Dermatofibroma/
+Skin Healthy/
+Skin Seborrheic_Keratosis/
+```
+
+Each folder should contain medical images (PNG, JPG, etc.)
+
+---
+
+## Phase 7: Run the Application
+
+```bash
+python app.py
+```
+
+### Expected Output
+
+```
+ * Serving Flask app 'app'
+ * Debug mode: off
+ * Running on http://127.0.0.1:5000
+Press CTRL+C to quit
+```
+
+### Open in Browser
+
+Navigate to: **http://localhost:5000**
+
+---
+
+## Phase 8: First-Time Usage
+
+### 1. Register an Account
+- You'll land on the **Sign Up** page
+- Enter a username and password (min 6 characters)
+- Click **Register Account**
+
+### 2. Sign In
+- Enter your credentials
+- Click **Sign In**
+
+### 3. Train the Model
+- Click **🧠 Train Model** in the sidebar
+- Click **Start Training**
+- Wait ~2–5 minutes for training to complete
+- 6 graphs will be generated showing model performance
+
+### 4. Detect Cancer
+- Click **🔬 Detection** in the sidebar
+- Upload a medical image
+- Click **🧬 Analyze Image**
+- View CNN prediction + Gemini AI second opinion
+
+---
+
+## 🔄 Running the App (Every Time After Setup)
+
+Every time you want to start the application:
+
+```bash
+# Step 1: Open Anaconda Prompt
+
+# Step 2: Activate the environment
+conda activate finalyearproject
+
+# Step 3: Navigate to the project
+cd "D:\finalYearProject\Predictive Oncology Deep Learning-Based Multi-Cancer Detection"
+
+# Step 4: Run the app
+python app.py
+
+# Step 5: Open browser → http://localhost:5000
+```
+
+### Stopping the App
+
+Press `Ctrl + C` in the terminal to stop the Flask server.
+
+---
+
+## 🔧 Common Issues & Fixes
+
+### ❌ `conda` command not found
+- Close and reopen Anaconda Prompt
+- Or add Anaconda to your PATH manually
+
+### ❌ `ModuleNotFoundError`
+```bash
+# Make sure the environment is activated
+conda activate finalyearproject
+pip install -r requirements.txt
+```
+
+### ❌ TensorFlow GPU warnings
+```bash
+# Check GPU availability
+python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
+```
+If no GPU is found, TensorFlow will use CPU (slower training but still works).
+
+### ❌ Port 5000 already in use
+Another application is using port 5000. Either:
+- Close the other application
+- Or change the port in `app.py`: `app.run(port=5001)`
+
+### ❌ Model not found error
+- You need to train the model first via the **Train Model** page
+
+### ❌ FutureWarning about Python version
+These are harmless warnings from Google libraries. The app still works perfectly. Ignore them.
+
+---
+
+## 🗑️ Removing the Environment (if needed)
+
+```bash
+# Deactivate first
+conda deactivate
+
+# Remove the environment completely
+conda remove -n finalyearproject --all -y
+```
+
+---
+
+## 📝 Summary of Commands
+
+| Action | Command |
+|--------|---------|
+| Create environment | `conda create -n finalyearproject python=3.9 -y` |
+| Activate environment | `conda activate finalyearproject` |
+| Install packages | `pip install -r requirements.txt` |
+| Run the app | `python app.py` |
+| Stop the app | `Ctrl + C` |
+| Deactivate environment | `conda deactivate` |
+| Remove environment | `conda remove -n finalyearproject --all -y` |
+
+```
+
+`SETUP_VENV.md`
+
+```markdown
+# 🐍 Setup Guide — Python venv (Virtual Environment)
+
+Complete step-by-step guide to set up and run the **Predictive Oncology Multi-Cancer Detection System** using Python's built-in `venv` module — no Anaconda required.
+
+---
+
+## 📋 Prerequisites
+
+Before starting, make sure you have:
+
+1. **Python 3.9 – 3.11** installed
+   - Download: https://www.python.org/downloads/
+   - ⚠️ Python 3.12+ may have compatibility issues with TensorFlow 2.13
+2. **pip** package manager (comes with Python)
+3. **Git** (optional, for cloning the repo)
+4. **Internet connection** (for installing packages and Gemini AI API)
+5. **GPU** (optional but recommended for faster model training)
+
+---
+
+## Phase 1: Install Python
+
+### If Python is NOT installed yet:
+
+1. Download **Python 3.9.x** or **3.10.x** from https://www.python.org/downloads/
+2. Run the installer
+3. ⚠️ **IMPORTANT:** Check ✅ **"Add Python to PATH"** during installation
+4. Complete the installation
+
+### Verify Installation
+
+Open **Command Prompt** (or PowerShell) and run:
+
+```bash
+python --version
+```
+
+Expected output: `Python 3.9.x` or `Python 3.10.x`
+
+Also verify pip:
+
+```bash
+pip --version
+```
+
+Expected output: `pip 23.x.x from ...`
+
+> ❌ If `python` is not recognized, Python was not added to PATH. Reinstall with the PATH checkbox enabled.
+
+---
+
+## Phase 2: Navigate to the Project Directory
+
+Open **Command Prompt** or **PowerShell**:
+
+```bash
+cd "D:\finalYearProject\Predictive Oncology Deep Learning-Based Multi-Cancer Detection"
+```
+
+If your project is in a different location, adjust the path accordingly.
+
+### Verify you're in the right directory:
+
+```bash
+dir app.py
+```
+
+You should see `app.py` listed. If not, you're in the wrong directory.
+
+---
+
+## Phase 3: Create a Virtual Environment
+
+```bash
+python -m venv venv
+```
+
+This creates a `venv/` folder in your project directory containing an isolated Python environment.
+
+> 💡 **Why use venv?** It keeps this project's packages separate from your system Python, avoiding version conflicts with other projects.
+
+### Activate the Virtual Environment
+
+**Windows (Command Prompt):**
+```bash
+venv\Scripts\activate
+```
+
+**Windows (PowerShell):**
+```powershell
+.\venv\Scripts\Activate.ps1
+```
+
+> ⚠️ **PowerShell Execution Policy Error?** Run this first:
+> ```powershell
+> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+> ```
+
+**macOS / Linux:**
+```bash
+source venv/bin/activate
+```
+
+### Verify Activation
+
+After activation, you should see `(venv)` at the beginning of your prompt:
+```
+(venv) D:\finalYearProject\Predictive Oncology Deep Learning-Based Multi-Cancer Detection>
+```
+
+> 💡 **Important:** You must activate the virtual environment **every time** you open a new terminal to work on this project.
+
+---
+
+## Phase 4: Install Python Dependencies
+
+With the virtual environment activated:
+
+```bash
+pip install -r requirements.txt
+```
+
+This installs all required packages:
+- Flask (web framework)
+- TensorFlow (deep learning)
+- OpenCV (image processing)
+- NumPy, Matplotlib, Seaborn (data & visualization)
+- scikit-learn (metrics)
+- google-generativeai (Gemini AI)
+- Pillow (image handling)
+- python-dotenv (environment variables)
+
+### Verify Installation
+
+```bash
+python -c "import flask; import tensorflow; import cv2; print('All packages installed successfully!')"
+```
+
+> ⏳ This step may take **5–10 minutes** depending on your internet speed, especially for TensorFlow.
+
+---
+
+## Phase 5: Configure Environment Variables
+
+### Option A: Copy the template (recommended)
+
+**Windows Command Prompt:**
+```bash
+copy .env.example .env
+```
+
+**PowerShell:**
+```powershell
+Copy-Item .env.example .env
+```
+
+### Option B: Create manually
+
+Create a file named `.env` in the project root with:
+
+```env
+# Flask Configuration
+SECRET_KEY=your-secret-key-change-this-in-production
+FLASK_ENV=development
+FLASK_DEBUG=False
+
+# Database
+DATABASE_URL=sqlite:///users.db
+
+# Upload Settings
+MAX_UPLOAD_SIZE_MB=5
+ALLOWED_EXTENSIONS=png,jpg,jpeg,gif,bmp
+
+# Gemini AI API Key (get from https://aistudio.google.com/apikey)
+GEMINI_API_KEY=your-gemini-api-key-here
+```
+
+### Get a Gemini API Key (Required for AI Second Opinion)
+
+1. Visit https://aistudio.google.com/apikey
+2. Sign in with your Google account
+3. Click **"Create API Key"**
+4. Copy the key
+5. Open `.env` in a text editor and replace `your-gemini-api-key-here` with your actual key
+
+> 💡 The app works **without** a Gemini API key, but the AI second opinion and non-medical image rejection features will be disabled.
+
+---
+
+## Phase 6: Verify the Dataset
+
+Ensure your training and test data folders exist:
+
+```bash
+dir train
+dir test
+```
+
+You should see folders like:
+```
+Breast Benign/
+Breast Malignant/
+Breast Normal/
+Healthy Liver/
+Liver Hepatic_Steatosis/
+Skin Dermatofibroma/
+Skin Healthy/
+Skin Seborrheic_Keratosis/
+```
+
+Each folder should contain medical images (PNG, JPG, etc.)
+
+---
+
+## Phase 7: Run the Application
+
+```bash
+python app.py
+```
+
+### Expected Output
+
+```
+ * Serving Flask app 'app'
+ * Debug mode: off
+ * Running on http://127.0.0.1:5000
+Press CTRL+C to quit
+```
+
+### Open in Browser
+
+Navigate to: **http://localhost:5000**
+
+---
+
+## Phase 8: First-Time Usage
+
+### 1. Register an Account
+- You'll land on the **Sign Up** page
+- Enter a username and password (min 6 characters)
+- Click **Register Account**
+
+### 2. Sign In
+- Enter your credentials
+- Click **Sign In**
+
+### 3. Train the Model
+- Click **🧠 Train Model** in the sidebar
+- Click **Start Training**
+- Wait ~2–5 minutes for training to complete
+- 6 graphs will be generated showing model performance
+
+### 4. Detect Cancer
+- Click **🔬 Detection** in the sidebar
+- Upload a medical image
+- Click **🧬 Analyze Image**
+- View CNN prediction + Gemini AI second opinion
+
+---
+
+## 🔄 Running the App (Every Time After Setup)
+
+Every time you want to start the application:
+
+```bash
+# Step 1: Open Command Prompt or PowerShell
+
+# Step 2: Navigate to the project
+cd "D:\finalYearProject\Predictive Oncology Deep Learning-Based Multi-Cancer Detection"
+
+# Step 3: Activate the virtual environment
+# Command Prompt:
+venv\Scripts\activate
+# PowerShell:
+.\venv\Scripts\Activate.ps1
+
+# Step 4: Run the app
+python app.py
+
+# Step 5: Open browser → http://localhost:5000
+```
+
+### Stopping the App
+
+Press `Ctrl + C` in the terminal to stop the Flask server.
+
+---
+
+## 🔧 Common Issues & Fixes
+
+### ❌ `python` command not found
+- Python was not added to PATH during installation
+- Reinstall Python and check ✅ **"Add Python to PATH"**
+- Or use `py` instead of `python`: `py app.py`
+
+### ❌ `venv\Scripts\activate` not recognized
+- Make sure you're in the project root directory
+- Make sure you created the venv: `python -m venv venv`
+
+### ❌ PowerShell execution policy error
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+### ❌ `ModuleNotFoundError`
+```bash
+# Make sure venv is activated (you should see (venv) in your prompt)
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### ❌ TensorFlow GPU warnings
+```bash
+# Check GPU availability
+python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
+```
+If no GPU is found, TensorFlow will use CPU (slower training but still works).
+
+### ❌ Port 5000 already in use
+Another application is using port 5000. Either:
+- Close the other application
+- Or change the port in `app.py`: `app.run(port=5001)`
+
+### ❌ Model not found error
+- You need to train the model first via the **Train Model** page
+
+### ❌ `pip install` fails with permission error
+```bash
+pip install -r requirements.txt --user
+```
+Or make sure your venv is activated (check for `(venv)` prefix in prompt).
+
+### ❌ FutureWarning about Python version
+These are harmless warnings from Google libraries. The app still works perfectly. Ignore them.
+
+---
+
+## 🗑️ Removing the Virtual Environment (if needed)
+
+```bash
+# Deactivate first
+deactivate
+
+# Delete the venv folder
+# Command Prompt:
+rmdir /s /q venv
+
+# PowerShell:
+Remove-Item -Recurse -Force venv
+```
+
+---
+
+## 📝 Summary of Commands
+
+| Action | Command |
+|--------|---------|
+| Create venv | `python -m venv venv` |
+| Activate (CMD) | `venv\Scripts\activate` |
+| Activate (PowerShell) | `.\venv\Scripts\Activate.ps1` |
+| Install packages | `pip install -r requirements.txt` |
+| Run the app | `python app.py` |
+| Stop the app | `Ctrl + C` |
+| Deactivate venv | `deactivate` |
+| Delete venv | `rmdir /s /q venv` |
+
+```
+
+`templates/detection.html`
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cancer Detection | Predictive Oncology</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: "Poppins", sans-serif;
+}
+
+body {
+    display: flex;
+    min-height: 100vh;
+    background: linear-gradient(135deg, #0f172a, #1e3a8a, #06b6d4);
+    color: white;
+}
+
+/* Sidebar */
+.sidebar {
+    width: 260px;
+    background: rgba(0, 0, 0, 0.7);
+    padding: 30px;
+    position: fixed;
+    height: 100%;
+    backdrop-filter: blur(12px);
+    z-index: 10;
+}
+
+.sidebar .logo {
+    font-size: 22px;
+    text-align: center;
+    color: #22c55e;
+    margin-bottom: 40px;
+    font-weight: 700;
+}
+
+.sidebar a {
+    display: block;
+    padding: 14px;
+    margin-bottom: 15px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    text-decoration: none;
+    color: white;
+    transition: 0.3s;
+}
+
+.sidebar a:hover {
+    background: linear-gradient(135deg, #22c55e, #4ade80);
+    color: black;
+    transform: translateX(5px);
+}
+
+/* Main */
+.main {
+    margin-left: 260px;
+    width: 100%;
+    padding: 40px;
+}
+
+.container {
+    max-width: 950px;
+    margin: auto;
+}
+
+/* Box */
+.box {
+    background: rgba(255, 255, 255, 0.08);
+    padding: 40px;
+    border-radius: 20px;
+    backdrop-filter: blur(15px);
+    box-shadow: 0 30px 60px rgba(0, 0, 0, 0.6);
+}
+
+h2 {
+    text-align: center;
+    margin-bottom: 25px;
+    color: #22c55e;
+    font-size: 28px;
+}
+
+/* Alerts */
+.alert {
+    padding: 15px 20px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+    font-weight: 500;
+    animation: slideIn 0.4s ease;
+}
+
+.alert-success {
+    background: rgba(34, 197, 94, 0.2);
+    color: #86efac;
+    border-left: 4px solid #22c55e;
+}
+
+.alert-error {
+    background: rgba(239, 68, 68, 0.15);
+    color: #fca5a5;
+    border-left: 4px solid #ef4444;
+}
+
+.alert-warning {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fcd34d;
+    border-left: 4px solid #f59e0b;
+}
+
+/* Form */
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 10px;
+    color: #38bdf8;
+    font-weight: 600;
+}
+
+.upload-area {
+    position: relative;
+    border: 2px dashed rgba(255, 255, 255, 0.25);
+    border-radius: 15px;
+    padding: 40px 20px;
+    text-align: center;
+    background: rgba(255, 255, 255, 0.03);
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    min-height: 160px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.upload-area:hover {
+    border-color: #38bdf8;
+    background: rgba(56, 189, 248, 0.08);
+    transform: scale(1.01);
+}
+
+.upload-area.has-file {
+    border-color: #22c55e;
+    background: rgba(34, 197, 94, 0.08);
+}
+
+.upload-area input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+}
+
+.upload-icon {
+    font-size: 48px;
+    margin-bottom: 10px;
+}
+
+.upload-text {
+    color: #94a3b8;
+    font-size: 14px;
+}
+
+.upload-text strong {
+    color: #38bdf8;
+}
+
+.file-name {
+    margin-top: 10px;
+    color: #22c55e;
+    font-weight: 600;
+    font-size: 14px;
+    display: none;
+}
+
+.preview-img {
+    max-width: 200px;
+    max-height: 150px;
+    margin-top: 15px;
+    border-radius: 10px;
+    display: none;
+    box-shadow: 0 5px 20px rgba(0,0,0,0.4);
+}
+
+/* Button */
+.btn {
+    display: inline-block;
+    width: 100%;
+    padding: 14px;
+    margin-top: 10px;
+    background: linear-gradient(135deg, #22c55e, #16a34a, #0ea5e9, #22c55e);
+    background-size: 300% 300%;
+    color: white;
+    border: none;
+    border-radius: 25px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 16px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+    animation: gradientShift 4s ease infinite;
+    box-shadow: 0 4px 15px rgba(34, 197, 94, 0.3);
+}
+
+@keyframes gradientShift {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+
+.btn:hover:not(:disabled) {
+    transform: scale(1.03) translateY(-3px);
+    box-shadow: 0 12px 30px rgba(34, 197, 94, 0.5);
+}
+
+.btn:active:not(:disabled) {
+    transform: scale(0.98);
+}
+
+.btn:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+    animation: none;
+}
+
+/* Loading Overlay */
+.loading-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.95);
+    backdrop-filter: blur(12px);
+    z-index: 9999;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+    animation: fadeInOverlay 0.4s ease;
+}
+
+@keyframes fadeInOverlay {
+    from {
+        opacity: 0;
+        backdrop-filter: blur(0px);
+    }
+    to {
+        opacity: 1;
+        backdrop-filter: blur(12px);
+    }
+}
+
+.loading-overlay.active {
+    display: flex;
+}
+
+.loader-container {
+    text-align: center;
+    animation: slideInUp 0.6s ease 0.2s backwards;
+}
+
+@keyframes slideInUp {
+    from {
+        opacity: 0;
+        transform: translateY(30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Advanced DNA Helix Loader */
+.dna-loader {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 40px;
+    perspective: 1000px;
+}
+
+.dna-loader .dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    animation: dnaHelix 2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+    transition: all 0.3s ease;
+}
+
+.dna-loader .dot:nth-child(1) { background: #22c55e; animation-delay: 0s; }
+.dna-loader .dot:nth-child(2) { background: #38bdf8; animation-delay: 0.12s; }
+.dna-loader .dot:nth-child(3) { background: #8b5cf6; animation-delay: 0.24s; }
+.dna-loader .dot:nth-child(4) { background: #f59e0b; animation-delay: 0.36s; }
+.dna-loader .dot:nth-child(5) { background: #ef4444; animation-delay: 0.48s; }
+.dna-loader .dot:nth-child(6) { background: #22c55e; animation-delay: 0.6s; }
+.dna-loader .dot:nth-child(7) { background: #38bdf8; animation-delay: 0.72s; }
+
+@keyframes dnaHelix {
+    0% {
+        transform: translateY(0) scale(0.8);
+        opacity: 0.4;
+        filter: blur(0.5px);
+    }
+    35% {
+        transform: translateY(-30px) scale(1.15);
+        opacity: 1;
+        filter: blur(0);
+    }
+    50% {
+        transform: translateY(-38px) scale(1.2);
+        opacity: 1;
+        filter: blur(0);
+    }
+    65% {
+        transform: translateY(-30px) scale(1.15);
+        opacity: 1;
+        filter: blur(0);
+    }
+    100% {
+        transform: translateY(0) scale(0.8);
+        opacity: 0.4;
+        filter: blur(0.5px);
+    }
+}
+
+.loading-text {
+    color: #e2e8f0;
+    font-size: 22px;
+    font-weight: 700;
+    margin-bottom: 8px;
+    letter-spacing: 0.5px;
+    animation: fadeInText 0.8s ease 0.3s backwards;
+}
+
+@keyframes fadeInText {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.loading-subtext {
+    color: #94a3b8;
+    font-size: 14px;
+    margin-bottom: 20px;
+    animation: fadeInText 0.8s ease 0.4s backwards;
+}
+
+.loading-step {
+    margin-top: 12px;
+    padding: 14px 28px;
+    background: rgba(56, 189, 248, 0.15);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    border-radius: 12px;
+    font-size: 14px;
+    color: #7dd3fc;
+    font-weight: 500;
+    animation: slidePulse 2s ease-in-out infinite, fadeInText 0.8s ease 0.5s backwards;
+    min-width: 300px;
+}
+
+@keyframes slidePulse {
+    0%, 100% {
+        box-shadow: 0 0 0 rgba(56, 189, 248, 0.4);
+        opacity: 0.8;
+    }
+    50% {
+        box-shadow: 0 0 20px rgba(56, 189, 248, 0.3);
+        opacity: 1;
+    }
+}
+
+/* Progress indicator */
+.progress-dots {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin-top: 20px;
+    opacity: 0;
+    animation: fadeInText 0.8s ease 0.6s forwards;
+}
+
+.progress-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.3);
+    animation: progressBounce 1.4s ease infinite;
+}
+
+.progress-dot:nth-child(1) { animation-delay: 0s; }
+.progress-dot:nth-child(2) { animation-delay: 0.3s; }
+.progress-dot:nth-child(3) { animation-delay: 0.6s; }
+
+@keyframes progressBounce {
+    0%, 100% {
+        background: rgba(255, 255, 255, 0.3);
+        transform: scale(1);
+    }
+    50% {
+        background: #38bdf8;
+        transform: scale(1.4);
+    }
+}
+
+/* Results */
+.results-section {
+    margin-top: 40px;
+    padding-top: 30px;
+    border-top: 2px solid rgba(255, 255, 255, 0.1);
+    animation: fadeUp 0.6s ease;
+}
+
+@keyframes fadeUp {
+    from { opacity: 0; transform: translateY(30px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideIn {
+    from { opacity: 0; transform: translateX(-20px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+.result-card {
+    background: rgba(0, 0, 0, 0.4);
+    padding: 25px;
+    border-radius: 15px;
+    margin-bottom: 20px;
+    transition: 0.3s;
+    animation: fadeUp 0.5s ease;
+}
+
+.result-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 15px 40px rgba(0,0,0,0.4);
+}
+
+.result-card h3 {
+    color: #38bdf8;
+    margin-bottom: 15px;
+    font-size: 20px;
+    text-align: center;
+}
+
+.result-image {
+    width: 100%;
+    max-width: 380px;
+    margin: 15px auto;
+    display: block;
+    border-radius: 12px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+    animation: floatImg 6s ease-in-out infinite;
+}
+
+@keyframes floatImg {
+    0% { transform: translateY(0px); }
+    50% { transform: translateY(-8px); }
+    100% { transform: translateY(0px); }
+}
+
+/* Prediction box */
+.prediction-box {
+    background: rgba(34, 197, 94, 0.08);
+    border: 2px solid rgba(34, 197, 94, 0.3);
+    padding: 20px;
+    border-radius: 12px;
+    margin: 15px 0;
+    text-align: center;
+}
+
+.prediction-box h4 {
+    color: #22c55e;
+    font-size: 18px;
+    margin-bottom: 10px;
+}
+
+.confidence-bar {
+    background: rgba(255,255,255,0.1);
+    border-radius: 10px;
+    height: 10px;
+    margin: 12px 0 6px;
+    overflow: hidden;
+    max-width: 400px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.confidence-fill {
+    height: 100%;
+    border-radius: 10px;
+    transition: width 1s ease;
+    background: linear-gradient(90deg, #22c55e, #4ade80);
+}
+
+.confidence-label {
+    font-size: 14px;
+    color: #86efac;
+    font-weight: 600;
+}
+
+.suggestion-box {
+    background: rgba(56, 189, 248, 0.08);
+    border-left: 4px solid #38bdf8;
+    padding: 15px 20px;
+    border-radius: 0 10px 10px 0;
+    margin-top: 15px;
+    color: #cbd5e1;
+    line-height: 1.6;
+    font-size: 14px;
+}
+
+/* Gemini Card */
+.gemini-card {
+    background: rgba(139, 92, 246, 0.06);
+    border: 1px solid rgba(139, 92, 246, 0.2);
+    border-left: 4px solid #8b5cf6;
+    padding: 25px;
+    border-radius: 15px;
+    margin-bottom: 20px;
+    animation: fadeUp 0.7s ease;
+}
+
+.gemini-card h3 {
+    color: #a78bfa;
+    text-align: center;
+}
+
+.gemini-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-top: 15px;
+}
+
+.gemini-item {
+    background: rgba(139, 92, 246, 0.08);
+    padding: 14px;
+    border-radius: 10px;
+    animation: fadeUp 0.5s ease backwards;
+}
+
+.gemini-item:nth-child(1) { animation-delay: 0.1s; }
+.gemini-item:nth-child(2) { animation-delay: 0.2s; }
+.gemini-item:nth-child(3) { animation-delay: 0.3s; }
+.gemini-item:nth-child(4) { animation-delay: 0.4s; }
+
+.gemini-item:hover {
+    background: rgba(139, 92, 246, 0.15);
+    transform: translateY(-2px);
+    transition: 0.3s;
+}
+
+.gemini-item strong {
+    color: #a78bfa;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: block;
+    margin-bottom: 6px;
+}
+
+.gemini-item p {
+    color: #e2e8f0;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.badge-row {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 15px;
+}
+
+.badge {
+    padding: 5px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.badge-agree { background: rgba(34,197,94,0.2); color: #86efac; }
+.badge-disagree { background: rgba(239,68,68,0.2); color: #fca5a5; }
+.badge-info { background: rgba(56,189,248,0.15); color: #7dd3fc; }
+.badge-severity-normal { background: rgba(34,197,94,0.15); color: #86efac; }
+.badge-severity-low { background: rgba(34,197,94,0.15); color: #86efac; }
+.badge-severity-moderate { background: rgba(245,158,11,0.15); color: #fcd34d; }
+.badge-severity-high { background: rgba(239,68,68,0.15); color: #fca5a5; }
+.badge-severity-critical { background: rgba(239,68,68,0.25); color: #fca5a5; border: 1px solid rgba(239,68,68,0.4); }
+
+.gemini-confidence-bar {
+    background: rgba(255,255,255,0.1);
+    border-radius: 10px;
+    height: 8px;
+    margin: 10px auto 4px;
+    overflow: hidden;
+    max-width: 300px;
+}
+
+.gemini-confidence-fill {
+    height: 100%;
+    border-radius: 10px;
+    transition: width 1.2s ease;
+    background: linear-gradient(90deg, #8b5cf6, #a78bfa);
+}
+
+.notes-box {
+    background: rgba(255,255,255,0.04);
+    padding: 12px 15px;
+    border-radius: 8px;
+    border-left: 3px solid #a78bfa;
+    margin-top: 12px;
+    text-align: left;
+    transition: 0.3s;
+    animation: fadeUp 0.6s ease backwards;
+    animation-delay: 0.5s;
+}
+
+.notes-box:hover {
+    background: rgba(255,255,255,0.08);
+}
+
+.ai-recommendation-box {
+    background: rgba(139, 92, 246, 0.06);
+    border-left-color: #8b5cf6;
+    animation: glowPulse 3s infinite alternate, fadeUp 0.6s ease backwards;
+    animation-delay: 0s, 0.6s;
+}
+
+@keyframes glowPulse {
+    from { box-shadow: 0 0 5px rgba(139, 92, 246, 0.1); }
+    to { box-shadow: 0 0 15px rgba(139, 92, 246, 0.3); }
+}
+
+.notes-box strong {
+    color: #a78bfa;
+    font-size: 12px;
+}
+
+.notes-box p {
+    color: #cbd5e1;
+    font-size: 13px;
+    margin-top: 4px;
+    line-height: 1.5;
+}
+
+/* Info box */
+.info-box {
+    margin-top: 30px;
+    padding: 20px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    color: #cbd5e1;
+    font-size: 14px;
+    line-height: 1.7;
+    border: 1px solid rgba(255,255,255,0.06);
+}
+
+/* Non-medical rejection */
+.rejection-card {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.2);
+    border-left: 4px solid #ef4444;
+    padding: 30px;
+    border-radius: 15px;
+    text-align: center;
+    margin-top: 20px;
+    animation: fadeUp 0.5s ease;
+}
+
+.rejection-card .icon {
+    font-size: 48px;
+    margin-bottom: 15px;
+}
+
+.rejection-card h3 {
+    color: #fca5a5;
+    margin-bottom: 10px;
+}
+
+.rejection-card p {
+    color: #e2e8f0;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+    .sidebar {
+        width: 100%;
+        height: auto;
+        position: relative;
+        padding: 20px;
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        z-index: 5;
+    }
+    
+    .sidebar .logo {
+        margin-bottom: 0;
+        font-size: 18px;
+    }
+    
+    .sidebar a {
+        display: inline-block;
+        padding: 10px 15px;
+        margin-bottom: 0;
+        margin-right: 10px;
+        font-size: 13px;
+    }
+    
+    .main {
+        margin-left: 0;
+        padding: 20px;
+    }
+    
+    .box {
+        padding: 20px;
+    }
+    
+    .gemini-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .progress-dots {
+        min-width: 200px;
+    }
+    
+    .loading-step {
+        min-width: 250px;
+        font-size: 12px;
+        padding: 12px 20px;
+    }
+    
+    .dna-loader {
+        gap: 10px;
+        margin-bottom: 30px;
+    }
+    
+    .dna-loader .dot {
+        width: 12px;
+        height: 12px;
+    }
+}
+
+@media (max-width: 600px) {
+    .sidebar {
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 10px;
+    }
+    
+    .sidebar a {
+        font-size: 12px;
+        padding: 8px 12px;
+        flex: 1;
+        min-width: 80px;
+        text-align: center;
+        margin-right: 5px;
+    }
+    
+    .main {
+        padding: 15px;
+    }
+    
+    .box {
+        padding: 15px;
+    }
+    
+    h2 {
+        font-size: 22px;
+    }
+    
+    .upload-icon {
+        font-size: 36px;
+        margin-bottom: 8px;
+    }
+    
+    .upload-text {
+        font-size: 12px;
+    }
+    
+    .upload-area {
+        padding: 25px 15px;
+        min-height: 140px;
+    }
+    
+    .preview-img {
+        max-width: 150px;
+        max-height: 120px;
+    }
+    
+    .result-image {
+        max-width: 100%;
+        height: auto;
+    }
+    
+    .btn {
+        padding: 12px;
+        font-size: 14px;
+    }
+    
+    .loading-text {
+        font-size: 18px;
+    }
+    
+    .loading-subtext {
+        font-size: 12px;
+    }
+    
+    .loading-step {
+        min-width: 200px;
+        font-size: 11px;
+        padding: 10px 16px;
+        margin-top: 10px;
+    }
+    
+    .gemini-grid {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+    
+    .gemini-item {
+        padding: 12px;
+    }
+    
+    .gemini-item strong {
+        font-size: 11px;
+    }
+    
+    .gemini-item p {
+        font-size: 12px;
+    }
+    
+    .prediction-box {
+        padding: 15px;
+    }
+    
+    .confidence-bar {
+        margin: 10px auto;
+    }
+    
+    .info-box {
+        font-size: 12px;
+        padding: 15px;
+        line-height: 1.5;
+    }
+    
+    .rejection-card {
+        padding: 20px;
+    }
+    
+    .rejection-card .icon {
+        font-size: 36px;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+    <div class="logo">🧬 Oncology AI</div>
+    <a href="/home">🏠 Home</a>
+    <a href="/detection">🔬 Detection</a>
+    <a href="/train">🧠 Train Model</a>
+    <a href="/model_info">📋 Model Info</a>
+    <a href="/logout">🚪 Logout</a>
+</div>
+
+<!-- Loading Overlay -->
+<div class="loading-overlay" id="loadingOverlay" role="status" aria-label="Processing your image">
+    <div class="loader-container">
+        <div class="dna-loader" aria-hidden="true">
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+            <div class="dot"></div>
+        </div>
+        <div class="loading-text">Analyzing Medical Image...</div>
+        <div class="loading-subtext">Running CNN model + Gemini AI validation</div>
+        <div class="loading-step" id="loadingStep" aria-live="polite">🔬 Processing image through CNN model...</div>
+        <div class="progress-dots" aria-hidden="true">
+            <div class="progress-dot"></div>
+            <div class="progress-dot"></div>
+            <div class="progress-dot"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Main -->
+<div class="main">
+    <div class="container">
+        <div class="box">
+            <h2>🔬 Cancer Detection</h2>
+
+            <!-- Flash Messages -->
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ category }}">
+                            {{ message }}
+                        </div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+
+            <!-- Upload Form -->
+            <form method="POST" enctype="multipart/form-data" id="uploadForm">
+                <div class="form-group">
+                    <label for="image">📁 Upload Medical Image</label>
+                    <div class="upload-area" id="uploadArea">
+                        <input type="file" name="image" id="image" accept=".png,.jpg,.jpeg,.gif,.bmp" required>
+                        <div class="upload-icon" id="uploadIcon">📤</div>
+                        <div class="upload-text">
+                            <strong>Click to upload</strong> or drag and drop<br>
+                            PNG, JPG, JPEG, GIF, BMP • Max 5MB
+                        </div>
+                        <div class="file-name" id="fileName"></div>
+                        <img class="preview-img" id="previewImg" alt="Preview">
+                    </div>
+                </div>
+                <button type="submit" class="btn" id="submitBtn">🧬 Analyze Image</button>
+            </form>
+
+            <!-- ===== NON-MEDICAL IMAGE REJECTION ===== -->
+            {% if error and not predicted_class %}
+                <div class="rejection-card">
+                    <div class="icon">🚫</div>
+                    <h3>Not a Medical Image</h3>
+                    <p>{{ error }}</p>
+                    <p style="margin-top:15px; color:#94a3b8; font-size:13px;">
+                        Please upload a <strong>breast ultrasound</strong>, <strong>liver scan</strong>, or <strong>skin lesion</strong> image for analysis.
+                    </p>
+                </div>
+
+                {% if image_path %}
+                <div class="result-card" style="margin-top:15px; text-align:center;">
+                    <p style="color:#94a3b8; font-size:13px; margin-bottom:10px;">Uploaded image:</p>
+                    <img src="{{ image_path }}" alt="Uploaded" class="result-image" style="max-width:250px; opacity:0.6;">
+                </div>
+                {% endif %}
+            {% endif %}
+
+            <!-- ===== SUCCESSFUL PREDICTION RESULTS ===== -->
+            {% if predicted_class %}
+                <div class="results-section">
+
+                    <!-- CNN Result Card -->
+                    <div class="result-card">
+                        <h3>📊 CNN Model Analysis</h3>
+
+                        {% if image_path %}
+                            <img src="{{ image_path }}" alt="Uploaded Image" class="result-image">
+                        {% endif %}
+
+                        <div class="prediction-box">
+                            <h4>🎯 {{ predicted_class }}</h4>
+                            {% if confidence %}
+                                <div class="confidence-bar">
+                                    <div class="confidence-fill" data-width="{{ confidence }}"></div>
+                                </div>
+                                <span class="confidence-label">CNN Confidence: {{ "%.1f"|format(confidence) }}%</span>
+                            {% endif %}
+                        </div>
+
+                        <div class="suggestion-box">
+                            <strong>💊 Recommendation:</strong><br>
+                            {{ suggestion }}
+                        </div>
+                    </div>
+
+                    <!-- ===== GEMINI AI SECOND OPINION ===== -->
+                    {% if gemini and not gemini.error %}
+                    <div class="gemini-card">
+                        <h3>🤖 Gemini Pro — AI Second Opinion</h3>
+
+                        <div class="gemini-grid">
+                            <div class="gemini-item">
+                                <strong>📋 AI Diagnosis</strong>
+                                <p>{{ gemini.gemini_diagnosis }}</p>
+                            </div>
+                            <div class="gemini-item">
+                                <strong>🏷️ Detected Condition</strong>
+                                <p>{{ gemini.detected_condition }}</p>
+                            </div>
+                            <div class="gemini-item">
+                                <strong>🔍 Image Type</strong>
+                                <p>{{ gemini.image_type }}</p>
+                            </div>
+                            <div class="gemini-item">
+                                <strong>🫀 Organ</strong>
+                                <p>{{ gemini.organ_detected | default('N/A') | capitalize }}</p>
+                            </div>
+                        </div>
+
+                        <!-- Gemini Confidence -->
+                        {% if gemini.gemini_confidence %}
+                        <div style="text-align:center; margin-top:15px;">
+                            <div class="gemini-confidence-bar">
+                                <div class="gemini-confidence-fill" data-width="{{ gemini.gemini_confidence }}"></div>
+                            </div>
+                            <span style="color:#c4b5fd; font-size:13px; font-weight:600;">AI Confidence: {{ gemini.gemini_confidence }}%</span>
+                        </div>
+                        {% endif %}
+
+                        <!-- Badges -->
+                        <div class="badge-row">
+                            {% if gemini.gemini_agrees %}
+                                <span class="badge badge-agree">✅ AI Agrees with CNN</span>
+                            {% else %}
+                                <span class="badge badge-disagree">⚠️ AI Disagrees with CNN</span>
+                            {% endif %}
+
+                            {% if gemini.severity %}
+                                <span class="badge badge-severity-{{ gemini.severity }}">
+                                    Severity: {{ gemini.severity | capitalize }}
+                                </span>
+                            {% endif %}
+
+                            <span class="badge badge-info">{{ gemini.image_type }}</span>
+                        </div>
+
+                        <!-- Analysis Notes -->
+                        {% if gemini.analysis_notes %}
+                        <div class="notes-box">
+                            <strong>📝 Analysis Notes</strong>
+                            <p>{{ gemini.analysis_notes }}</p>
+                        </div>
+                        {% endif %}
+
+                        <!-- AI Recommendation -->
+                        {% if gemini.gemini_suggestion %}
+                        <div class="notes-box ai-recommendation-box" style="margin-top:10px;">
+                            <strong>🤖 AI Recommendation</strong>
+                            <p>{{ gemini.gemini_suggestion }}</p>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% elif gemini and gemini.error %}
+                    <div class="result-card" style="border-left: 4px solid #f59e0b;">
+                        <p style="color:#fcd34d; font-size:13px; text-align:center;">
+                            ⚠️ AI second opinion unavailable: {{ gemini.error }}
+                        </p>
+                    </div>
+                    {% endif %}
+
+                </div>
+            {% endif %}
+
+            <!-- Info Box (no results yet) -->
+            {% if not predicted_class and not error %}
+                <div class="info-box">
+                    <strong>ℹ️ How to use:</strong><br>
+                    1. Upload a medical image (breast ultrasound, liver scan, or skin lesion)<br>
+                    2. Click "Analyze Image" — the system runs two checks:<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;• <strong>CNN Model</strong> — Deep learning classification<br>
+                    &nbsp;&nbsp;&nbsp;&nbsp;• <strong>Gemini Pro AI</strong> — Validates the image & provides a second opinion<br>
+                    3. View combined results with confidence scores and recommendations<br>
+                    <br>
+                    <span style="color:#f59e0b;">⚠️ Non-medical images (objects, selfies, etc.) will be automatically rejected.</span>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<script>
+'use strict';
+
+// Configuration
+const CONFIG = {
+    MAX_FILE_SIZE: 5 * 1024 * 1024,
+    ALLOWED_EXTENSIONS: ['png', 'jpg', 'jpeg', 'gif', 'bmp'],
+    PREVIEW_MAX_WIDTH: 200,
+    PREVIEW_MAX_HEIGHT: 150,
+    STEP_INTERVAL: 2500,
+    ANIMATION_DELAY: 300
+};
+
+// Loading steps
+const LOADING_STEPS = [
+    '🔬 Processing image through CNN model...',
+    '🧠 Running deep learning classification...',
+    '🤖 Sending to Gemini Pro for validation...',
+    '📋 Gemini AI analyzing medical patterns...',
+    '✅ Compiling results...'
+];
+
+// DOM elements cache
+const DOM = {
+    fileInput: null,
+    uploadArea: null,
+    uploadIcon: null,
+    fileName: null,
+    previewImg: null,
+    form: null,
+    submitBtn: null,
+    loadingOverlay: null,
+    loadingStep: null,
+    
+    init() {
+        this.fileInput = document.getElementById('image');
+        this.uploadArea = document.getElementById('uploadArea');
+        this.uploadIcon = document.getElementById('uploadIcon');
+        this.fileName = document.getElementById('fileName');
+        this.previewImg = document.getElementById('previewImg');
+        this.form = document.getElementById('uploadForm');
+        this.submitBtn = document.getElementById('submitBtn');
+        this.loadingOverlay = document.getElementById('loadingOverlay');
+        this.loadingStep = document.getElementById('loadingStep');
+        
+        return this.isValid();
+    },
+    
+    isValid() {
+        return !!(this.fileInput && this.uploadArea && this.form && 
+                  this.submitBtn && this.loadingOverlay && this.loadingStep);
+    }
+};
+
+// File validation utility
+const FileValidator = {
+    isValidExtension(filename) {
+        if (!filename || !filename.includes('.')) return false;
+        const ext = filename.split('.').pop().toLowerCase();
+        return CONFIG.ALLOWED_EXTENSIONS.includes(ext);
+    },
+    
+    isValidSize(file) {
+        return file && file.size <= CONFIG.MAX_FILE_SIZE;
+    },
+    
+    formatFileSize(bytes) {
+        if (!bytes || bytes <= 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+    },
+    
+    validate(file) {
+        if (!file) {
+            return { valid: false, message: 'No file selected' };
+        }
+        
+        if (!this.isValidExtension(file.name)) {
+            return { 
+                valid: false, 
+                message: `Invalid file type. Allowed: ${CONFIG.ALLOWED_EXTENSIONS.join(', ')}` 
+            };
+        }
+        
+        if (!this.isValidSize(file)) {
+            return { 
+                valid: false, 
+                message: `File size exceeds limit (${this.formatFileSize(CONFIG.MAX_FILE_SIZE)})` 
+            };
+        }
+        
+        return { valid: true, message: '' };
+    }
+};
+
+// File upload handler
+const FileUploadHandler = {
+    handleFileSelect(event) {
+        if (!event.target.files || !event.target.files[0]) return;
+        
+        const file = event.target.files[0];
+        const validation = FileValidator.validate(file);
+        
+        if (!validation.valid) {
+            alert('File validation failed: ' + validation.message);
+            DOM.fileInput.value = '';
+            DOM.uploadArea.classList.remove('has-file');
+            return;
+        }
+        
+        this.displayFileInfo(file);
+        this.displayPreview(file);
+    },
+    
+    displayFileInfo(file) {
+        if (!DOM.uploadArea || !DOM.uploadIcon || !DOM.fileName) return;
+        
+        DOM.uploadArea.classList.add('has-file');
+        DOM.uploadIcon.textContent = '✅';
+        DOM.fileName.style.display = 'block';
+        DOM.fileName.textContent = `${file.name} (${FileValidator.formatFileSize(file.size)})`;
+    },
+    
+    displayPreview(file) {
+        if (!DOM.previewImg) return;
+        
+        const reader = new FileReader();
+        reader.onerror = () => {
+            console.error('Failed to read file');
+            DOM.previewImg.style.display = 'none';
+        };
+        
+        reader.onload = (e) => {
+            if (e.target && e.target.result) {
+                DOM.previewImg.src = e.target.result;
+                DOM.previewImg.style.display = 'block';
+            }
+        };
+        
+        try {
+            reader.readAsDataURL(file);
+        } catch (err) {
+            console.error('Error reading file:', err);
+        }
+    },
+    
+    init() {
+        if (!DOM.fileInput) return;
+        
+        DOM.fileInput.addEventListener('change', this.handleFileSelect.bind(this));
+        
+        // Drag and drop support
+        if (DOM.uploadArea) {
+            DOM.uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                DOM.uploadArea.style.borderColor = '#38bdf8';
+                DOM.uploadArea.style.background = 'rgba(56, 189, 248, 0.15)';
+            });
+            
+            DOM.uploadArea.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                DOM.uploadArea.style.borderColor = 'rgba(255, 255, 255, 0.25)';
+                DOM.uploadArea.style.background = 'rgba(255, 255, 255, 0.03)';
+            });
+            
+            DOM.uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                DOM.uploadArea.style.borderColor = 'rgba(255, 255, 255, 0.25)';
+                DOM.uploadArea.style.background = 'rgba(255, 255, 255, 0.03)';
+                
+                if (e.dataTransfer && e.dataTransfer.files[0]) {
+                    DOM.fileInput.files = e.dataTransfer.files;
+                    this.handleFileSelect({ target: DOM.fileInput });
+                }
+            });
+        }
+    }
+};
+
+// Loading animation handler
+const LoadingAnimation = {
+    stepIndex: 0,
+    stepInterval: null,
+    
+    updateStep() {
+        if (!DOM.loadingStep) return;
+        this.stepIndex = (this.stepIndex + 1) % LOADING_STEPS.length;
+        DOM.loadingStep.textContent = LOADING_STEPS[this.stepIndex];
+    },
+    
+    start() {
+        if (!DOM.loadingOverlay || !DOM.submitBtn) return;
+        
+        this.stepIndex = 0;
+        DOM.submitBtn.disabled = true;
+        DOM.submitBtn.textContent = '⏳ Analyzing...';
+        DOM.loadingOverlay.classList.add('active');
+        
+        // Clear any existing interval
+        this.stop();
+        
+        // Start new interval
+        this.stepInterval = setInterval(() => this.updateStep(), CONFIG.STEP_INTERVAL);
+    },
+    
+    stop() {
+        if (this.stepInterval) {
+            clearInterval(this.stepInterval);
+            this.stepInterval = null;
+        }
+        
+        if (DOM.submitBtn) {
+            DOM.submitBtn.disabled = false;
+            DOM.submitBtn.textContent = '🧬 Analyze Image';
+        }
+        
+        if (DOM.loadingOverlay) {
+            DOM.loadingOverlay.classList.remove('active');
+        }
+    },
+    
+    reset() {
+        this.stop();
+        this.stepIndex = 0;
+    }
+};
+
+// Form submission handler
+const FormHandler = {
+    handleSubmit(event) {
+        if (!DOM.fileInput || !DOM.fileInput.files || !DOM.fileInput.files[0]) {
+            event.preventDefault();
+            alert('Please select a file first');
+            return false;
+        }
+        
+        const file = DOM.fileInput.files[0];
+        const validation = FileValidator.validate(file);
+        
+        if (!validation.valid) {
+            event.preventDefault();
+            alert('File validation failed: ' + validation.message);
+            return false;
+        }
+        
+        // Start loading animation
+        LoadingAnimation.start();
+        
+        // Clean up interval on page unload
+        window.addEventListener('beforeunload', () => LoadingAnimation.reset());
+        
+        return true;
+    },
+    
+    init() {
+        if (!DOM.form) return;
+        DOM.form.addEventListener('submit', this.handleSubmit.bind(this));
+    }
+};
+
+// Confidence bar animation
+const ConfidenceBar = {
+    animateBars() {
+        const bars = document.querySelectorAll('[data-width]');
+        if (bars.length === 0) return;
+        
+        bars.forEach((bar) => {
+            const width = bar.getAttribute('data-width');
+            if (width && !isNaN(width)) {
+                setTimeout(() => {
+                    bar.style.width = width + '%';
+                }, CONFIG.ANIMATION_DELAY);
+            }
+        });
+    },
+    
+    init() {
+        this.animateBars();
+    }
+};
+
+// Initialize app
+document.addEventListener('DOMContentLoaded', () => {
+    try {
+        // Initialize DOM elements
+        if (!DOM.init()) {
+            console.warn('Some DOM elements not found, app may not work fully');
+            return;
+        }
+        
+        // Initialize all handlers
+        FileUploadHandler.init();
+        FormHandler.init();
+        ConfidenceBar.init();
+        
+    } catch (err) {
+        console.error('Initialization error:', err);
+    }
+});
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+    LoadingAnimation.reset();
+});
+</script>
+
+</body>
+</html>
+
+```
+
+`templates/home.html`
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Predictive Oncology</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+<style>
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+    font-family:"Poppins", sans-serif;
+}
+
+/* Background - Medical Theme */
+body{
+    display:flex;
+    min-height:100vh;
+    background: linear-gradient(135deg,#0f172a,#1e3a8a,#2563eb);
+    color:white;
+}
+
+/* Sidebar (Right) */
+.sidebar{
+    position:fixed;
+    right:0;
+    top:0;
+    width:260px;
+    height:100%;
+    background:rgba(0,0,0,0.75);
+    backdrop-filter:blur(12px);
+    padding:30px;
+}
+
+.logo{
+    text-align:center;
+    font-size:20px;
+    font-weight:700;
+    color:#38bdf8;
+    margin-bottom:40px;
+}
+
+.sidebar a{
+    display:block;
+    color:white;
+    text-decoration:none;
+    padding:14px;
+    margin-bottom:12px;
+    border-radius:10px;
+    background:rgba(255,255,255,0.08);
+    transition:0.3s;
+}
+
+.sidebar a:hover{
+    background:linear-gradient(135deg,#38bdf8,#22c55e);
+    color:black;
+    transform:translateX(-5px);
+}
+
+/* Main */
+.main{
+    flex:1;
+    padding:40px;
+    margin-right:260px;
+}
+
+/* Container */
+.container{
+    max-width:1100px;
+    margin:auto;
+}
+
+/* Hero */
+.hero{
+    background:rgba(255,255,255,0.08);
+    backdrop-filter:blur(15px);
+    border-radius:25px;
+    padding:50px;
+    text-align:center;
+    box-shadow:0 25px 60px rgba(0,0,0,0.6);
+    animation:fadeUp 1s ease;
+}
+
+@keyframes fadeUp{
+    from{opacity:0; transform:translateY(40px);}
+    to{opacity:1; transform:translateY(0);}
+}
+
+.hero h1{
+    font-size:34px;
+    color:#38bdf8;
+    margin-bottom:20px;
+}
+
+.hero p{
+    font-size:16px;
+    line-height:1.7;
+    color:#e2e8f0;
+}
+
+/* Cards */
+.cards{
+    margin-top:30px;
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
+    gap:20px;
+}
+
+.card{
+    background:rgba(255,255,255,0.07);
+    padding:20px;
+    border-radius:15px;
+    transition:0.3s;
+    border:1px solid rgba(255,255,255,0.1);
+}
+
+.card:hover{
+    transform:scale(1.05);
+    box-shadow:0 10px 30px rgba(0,0,0,0.4);
+}
+
+.card h3{
+    color:#22c55e;
+    margin-bottom:10px;
+}
+
+.card p{
+    font-size:14px;
+    color:#cbd5f5;
+}
+
+/* Footer */
+footer{
+    margin-top:30px;
+    text-align:center;
+    font-size:13px;
+    color:#aaa;
+}
+
+/* Responsive */
+@media(max-width:900px){
+    .sidebar{display:none;}
+    .main{margin-right:0;}
+}
+</style>
+</head>
+
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+    <div class="logo">🧬 Oncology AI</div>
+    <a href="/detection">🔬 Detection</a>
+    <a href="/train">🧠 Train Model</a>
+    <a href="/model_info">📋 Model Info</a>
+    <a href="/home">🏠 Home</a>
+    <a href="/logout">🚪 Logout</a>
+</div>
+
+<!-- Main -->
+<div class="main">
+<div class="container">
+
+<!-- HERO -->
+<div class="hero">
+    <h1>Predictive Oncology: Multi-Cancer Detection</h1>
+    <p>
+        This intelligent system uses <strong>Deep Learning and Medical Imaging</strong> 
+        to detect multiple cancer types including <strong>Breast, Liver, and Skin cancers</strong>.  
+        It assists in <strong>early diagnosis, clinical decision-making, and risk prediction</strong>.
+    </p>
+</div>
+
+<!-- CARDS -->
+<div class="cards">
+
+<div class="card">
+<h3>🧠 Deep Learning</h3>
+<p>
+Advanced neural networks automatically learn patterns from medical images 
+to detect abnormalities and classify cancer types with high accuracy.
+</p>
+</div>
+
+<div class="card">
+<h3>🩺 Cancer Detection</h3>
+<p>
+System detects:
+• Breast (Normal, Benign, Malignant)  
+• Liver (Healthy, Fatty Liver)  
+• Skin (Dermatofibroma, Keratosis)
+</p>
+</div>
+
+<div class="card">
+<h3>⚙️ Models Used</h3>
+<p>
+• CNN – Custom deep learning model  
+• VGG16 – Feature extraction  
+• ResNet50 – High-performance architecture
+</p>
+</div>
+
+<div class="card">
+<h3>📊 Medical Features</h3>
+<p>
+Analyzes imaging patterns such as texture, density, and structural irregularities 
+to identify cancerous tissues.
+</p>
+</div>
+
+<div class="card">
+<h3>🏥 Clinical Impact</h3>
+<p>
+Supports doctors in early detection, reduces diagnosis time, 
+and improves patient survival rates.
+</p>
+</div>
+
+<div class="card">
+<h3>🎯 Output</h3>
+<p>
+Provides predicted cancer type along with medical suggestions 
+for further diagnosis and treatment.
+</p>
+</div>
+
+</div>
+
+<footer>
+⚠ This system is for research and educational purposes only. Always consult a medical professional.
+</footer>
+
+</div>
+</div>
+
+</body>
+</html>
+
+```
+
+`templates/model_info.html`
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Model Information | Predictive Oncology</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+<style>
+body {
+    font-family: 'Poppins', sans-serif;
+    margin: 0;
+    background: linear-gradient(135deg, #0f172a, #1e3a8a, #06b6d4);
+    color: #e2e8f0;
+}
+
+/* Sidebar */
+.sidebar {
+    width: 260px;
+    background: rgba(0, 0, 0, 0.7);
+    padding: 30px;
+    position: fixed;
+    height: 100%;
+    backdrop-filter: blur(12px);
+}
+
+.sidebar .logo {
+    font-size: 22px;
+    text-align: center;
+    color: #22c55e;
+    margin-bottom: 40px;
+    font-weight: 700;
+}
+
+.sidebar a {
+    display: block;
+    padding: 14px;
+    margin-bottom: 15px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    text-decoration: none;
+    color: white;
+    transition: 0.3s;
+}
+
+.sidebar a:hover {
+    background: linear-gradient(135deg, #22c55e, #4ade80);
+    color: black;
+    transform: translateX(5px);
+}
+
+/* Main */
+.main {
+    margin-left: 260px;
+    width: 100%;
+    padding: 40px;
+}
+
+/* Container */
+.container {
+    max-width: 1000px;
+    margin: auto;
+}
+
+/* Header */
+h1 {
+    text-align: center;
+    color: #22c55e;
+    margin-bottom: 30px;
+    font-size: 32px;
+}
+
+/* Card */
+.card {
+    background: rgba(255, 255, 255, 0.08);
+    padding: 30px;
+    margin-bottom: 25px;
+    border-radius: 15px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(15px);
+}
+
+.card h2 {
+    color: #38bdf8;
+    margin-top: 0;
+    margin-bottom: 15px;
+    border-bottom: 2px solid rgba(56, 189, 248, 0.3);
+    padding-bottom: 10px;
+}
+
+.card h3 {
+    color: #22c55e;
+    margin-top: 20px;
+    margin-bottom: 10px;
+}
+
+p, li {
+    line-height: 1.7;
+    color: #cbd5e1;
+}
+
+ul, ol {
+    margin-left: 20px;
+    margin-bottom: 15px;
+}
+
+li {
+    margin-bottom: 8px;
+}
+
+/* Status Box */
+.status-box {
+    background: rgba(34, 197, 94, 0.1);
+    border-left: 4px solid #22c55e;
+    padding: 15px;
+    border-radius: 10px;
+    margin-bottom: 15px;
+}
+
+.status-box.warning {
+    background: rgba(239, 68, 68, 0.1);
+    border-left-color: #ef4444;
+}
+
+.status-box h4 {
+    color: #22c55e;
+    margin-top: 0;
+}
+
+.status-box.warning h4 {
+    color: #fca5a5;
+}
+
+/* Code block */
+.code-block {
+    background: rgba(0, 0, 0, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 15px;
+    border-radius: 8px;
+    overflow-x: auto;
+    margin: 10px 0;
+    font-family: 'Courier New', monospace;
+    font-size: 13px;
+    color: #86efac;
+}
+
+/* Grid */
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 15px;
+    margin: 15px 0;
+}
+
+.grid-item {
+    background: rgba(56, 189, 248, 0.1);
+    border: 1px solid rgba(56, 189, 248, 0.3);
+    padding: 15px;
+    border-radius: 10px;
+}
+
+.grid-item h4 {
+    color: #38bdf8;
+    margin-top: 0;
+}
+
+.grid-item p {
+    font-size: 14px;
+    margin: 0;
+}
+
+/* Badges */
+.badge {
+    display: inline-block;
+    background: rgba(34, 197, 94, 0.2);
+    color: #86efac;
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-right: 8px;
+    margin-bottom: 8px;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+    .sidebar {
+        display: none;
+    }
+    .main {
+        margin-left: 0;
+        padding: 20px;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+    <div class="logo">🧬 Oncology AI</div>
+    <a href="/home">🏠 Home</a>
+    <a href="/detection">🔬 Detection</a>
+    <a href="/train">🧠 Train Model</a>
+    <a href="/model_info">📋 Model Info</a>
+    <a href="/logout">🚪 Logout</a>
+</div>
+
+<!-- Main -->
+<div class="main">
+    <div class="container">
+        <h1>📋 Model Information</h1>
+
+        <!-- Model Status -->
+        <div class="card">
+            <h2>📊 Model Status</h2>
+            
+            {% if info and info.model_exists %}
+                <div class="status-box">
+                    <h4>✅ Model Status: TRAINED</h4>
+                    <p>The model is ready for cancer detection predictions.</p>
+                </div>
+                
+                {% if info.training_status and info.training_status[0] %}
+                    <p><strong>Last Trained:</strong> {{ info.training_status[1] }}</p>
+                    <p><strong>Available Cancer Classes:</strong></p>
+                    <div class="grid">
+                        {% for cancer_class in info.training_status[2].split(',') %}
+                            <div class="grid-item">
+                                <h4>{{ cancer_class }}</h4>
+                                <p>Trainable class</p>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            {% else %}
+                <div class="status-box warning">
+                    <h4>⚠️ Model Status: NOT TRAINED</h4>
+                    <p>The model needs to be trained before performing predictions. Visit the <a href="/train" style="color:#fca5a5;text-decoration:underline;">Train Model</a> page to train.</p>
+                </div>
+            {% endif %}
+        </div>
+
+        <!-- Model Architecture -->
+        <div class="card">
+            <h2>🏗️ Model Architecture</h2>
+            
+            <h3>Convolutional Neural Network (CNN)</h3>
+            <p>The current model uses a custom CNN architecture designed for medical image classification:</p>
+            
+            <div class="code-block">
+Conv2D(32, 3x3) + ReLU
+MaxPooling2D
+Conv2D(64, 3x3) + ReLU
+MaxPooling2D
+Flatten
+Dense(128) + ReLU
+Dense(N_classes) + Softmax
+            </div>
+
+            <h3>Model Specifications</h3>
+            <ul>
+                <li><strong>Input Size:</strong> 150×150×3 (RGB images)</li>
+                <li><strong>Optimizer:</strong> Adam</li>
+                <li><strong>Loss Function:</strong> Sparse Categorical Crossentropy</li>
+                <li><strong>Metric:</strong> Accuracy</li>
+                <li><strong>Training Epochs:</strong> 10</li>
+                <li><strong>Validation Split:</strong> 20%</li>
+            </ul>
+        </div>
+
+        <!-- Classes -->
+        <div class="card">
+            <h2>🩺 Supported Cancer Classes</h2>
+            
+            <h3>Breast Cancer (3 classes)</h3>
+            <ul>
+                <li><strong>Normal:</strong> Healthy breast tissue</li>
+                <li><strong>Benign:</strong> Non-cancerous tumor</li>
+                <li><strong>Malignant:</strong> Cancerous tumor</li>
+            </ul>
+
+            <h3>Liver Conditions (2 classes)</h3>
+            <ul>
+                <li><strong>Healthy:</strong> Normal liver</li>
+                <li><strong>Hepatic Steatosis:</strong> Fatty liver</li>
+            </ul>
+
+            <h3>Skin Conditions (3 classes)</h3>
+            <ul>
+                <li><strong>Healthy:</strong> Normal skin</li>
+                <li><strong>Dermatofibroma:</strong> Benign skin condition</li>
+                <li><strong>Seborrheic Keratosis:</strong> Non-cancerous skin growth</li>
+            </ul>
+        </div>
+
+        <!-- Training Data -->
+        <div class="card">
+            <h2>📚 Training & Testing Data</h2>
+            
+            <p>The model is trained on organized datasets with the following structure:</p>
+
+            <h3>Directory Structure</h3>
+            <div class="code-block">
+train/
+├── Breast Normal/
+├── Breast Benign/
+├── Breast Malignant/
+├── Healthy Liver/
+├── Liver Hepatic_Steatosis/
+├── Skin Dermatofibroma/
+├── Skin Healthy/
+└── Skin Seborrheic_Keratosis/
+
+test/
+└── (Same structure as train/)
+            </div>
+
+            <h3>Requirements</h3>
+            <ul>
+                <li>Images must be in PNG, JPG, JPEG, GIF, or BMP format</li>
+                <li>Each class should have multiple samples for better generalization</li>
+                <li>Training set should have more samples than test set (typically 80/20 split)</li>
+                <li>Images are automatically resized to 150×150 pixels</li>
+            </ul>
+        </div>
+
+        <!-- Performance Metrics -->
+        <div class="card">
+            <h2>📈 Performance Metrics</h2>
+            
+            {% if info and info.model_exists %}
+                <p>After training, the following visualizations are generated:</p>
+                
+                <h3>Available Metrics</h3>
+                <div class="grid">
+                    <div class="grid-item">
+                        <h4>📊 Accuracy Plot</h4>
+                        <p>Shows training and validation accuracy over epochs</p>
+                    </div>
+                    <div class="grid-item">
+                        <h4>🎯 Confusion Matrix</h4>
+                        <p>Displays prediction accuracy per class</p>
+                    </div>
+                </div>
+
+                <p style="margin-top:20px;">
+                    <a href="/train" style="color:#38bdf8;text-decoration:underline;">View detailed training results →</a>
+                </p>
+            {% else %}
+                <p>Train the model to generate performance metrics and visualizations.</p>
+            {% endif %}
+        </div>
+
+        <!-- How to Use -->
+        <div class="card">
+            <h2>🚀 How to Use</h2>
+            
+            <h3>Step 1: Train the Model</h3>
+            <ol>
+                <li>Prepare training and test data in the required directory structure</li>
+                <li>Navigate to the <a href="/train" style="color:#38bdf8;text-decoration:underline;">Train Model</a> page</li>
+                <li>The training process will automatically load all available classes</li>
+                <li>Wait for training to complete</li>
+            </ol>
+
+            <h3>Step 2: Make Predictions</h3>
+            <ol>
+                <li>Go to the <a href="/detection" style="color:#38bdf8;text-decoration:underline;">Detection</a> page</li>
+                <li>Upload a medical image</li>
+                <li>The model will analyze the image and provide prediction</li>
+                <li>View the classification result and recommendation</li>
+            </ol>
+
+            <h3>Step 3: Review Results</h3>
+            <ul>
+                <li>Check performance metrics and visualizations</li>
+                <li>Retrain with better data if needed</li>
+                <li>Monitor prediction accuracy</li>
+            </ul>
+        </div>
+
+        <!-- Disclaimer -->
+        <div class="card">
+            <h2>⚠️ Important Disclaimer</h2>
+            
+            <p style="background:rgba(239,68,68,0.1);border-left:4px solid #ef4444;padding:15px;border-radius:10px;">
+                <strong>This AI system is designed for research and educational purposes only.</strong>
+                <br><br>
+                The predictions made by this model are NOT a substitute for professional medical diagnosis. 
+                Always consult qualified healthcare professionals and licensed oncologists for actual medical diagnosis 
+                and treatment decisions. Do not rely solely on this system for clinical decision-making.
+                <br><br>
+                The model's accuracy depends on training data quality and may have limitations with real-world edge cases.
+            </p>
+        </div>
+
+    </div>
+</div>
+
+</body>
+</html>
+
+```
+
+`templates/signin.html`
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sign In | Predictive Oncology</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+<style>
+*{
+margin:0;
+padding:0;
+box-sizing:border-box;
+font-family:"Poppins",sans-serif;
+}
+
+/* Background - Medical Theme */
+body{
+display:flex;
+min-height:100vh;
+background:linear-gradient(135deg,#020617,#0f172a,#1e3a8a);
+color:white;
+}
+
+/* Main */
+.main{
+flex:1;
+display:flex;
+justify-content:center;
+align-items:center;
+padding:40px;
+}
+
+/* Sidebar */
+.sidebar{
+width:260px;
+background:rgba(0,0,0,0.75);
+backdrop-filter:blur(12px);
+padding:30px 20px;
+display:flex;
+flex-direction:column;
+}
+
+/* Logo */
+.logo{
+font-size:20px;
+font-weight:700;
+text-align:center;
+color:#38bdf8;
+margin-bottom:40px;
+}
+
+/* Sidebar links */
+.sidebar a{
+text-decoration:none;
+color:white;
+padding:14px;
+margin-bottom:12px;
+border-radius:10px;
+background:rgba(255,255,255,0.08);
+transition:0.3s;
+}
+
+.sidebar a:hover{
+background:linear-gradient(135deg,#38bdf8,#22c55e);
+color:black;
+transform:translateX(-5px);
+}
+
+/* Login Card */
+.login-card{
+width:100%;
+max-width:420px;
+background:rgba(255,255,255,0.08);
+backdrop-filter:blur(18px);
+border-radius:20px;
+padding:45px 35px;
+box-shadow:0 30px 60px rgba(0,0,0,0.7);
+animation:fadeIn 1s ease;
+}
+
+@keyframes fadeIn{
+from{opacity:0;transform:translateY(30px);}
+to{opacity:1;transform:translateY(0);}
+}
+
+/* Title */
+.title{
+text-align:center;
+font-size:26px;
+font-weight:700;
+color:#38bdf8;
+margin-bottom:10px;
+}
+
+/* Subtitle */
+.subtitle{
+text-align:center;
+font-size:14px;
+color:#cbd5e1;
+margin-bottom:25px;
+line-height:1.6;
+}
+
+/* Inputs */
+.input-group{
+margin-bottom:18px;
+}
+
+.input-group input{
+width:100%;
+padding:14px;
+border:none;
+border-radius:10px;
+font-size:15px;
+outline:none;
+background:rgba(255,255,255,0.95);
+}
+
+/* Button */
+.login-btn{
+width:100%;
+padding:14px;
+border:none;
+border-radius:30px;
+background:linear-gradient(135deg,#38bdf8,#22c55e);
+color:black;
+font-size:16px;
+font-weight:600;
+cursor:pointer;
+transition:0.3s;
+}
+
+.login-btn:hover{
+transform:scale(1.05);
+box-shadow:0 10px 25px rgba(56,189,248,0.5);
+}
+
+/* Links */
+.links{
+margin-top:20px;
+text-align:center;
+font-size:14px;
+}
+
+.links a{
+color:#22c55e;
+font-weight:600;
+text-decoration:none;
+}
+
+/* Theory Box */
+.theory{
+margin-top:20px;
+background:rgba(255,255,255,0.05);
+padding:15px;
+border-radius:10px;
+font-size:13px;
+line-height:1.6;
+color:#cbd5e1;
+}
+
+/* Footer */
+.footer{
+margin-top:20px;
+text-align:center;
+font-size:12px;
+color:#94a3b8;
+}
+
+/* Responsive */
+@media(max-width:850px){
+.sidebar{display:none;}
+.main{padding:20px;}
+}
+</style>
+</head>
+
+<body>
+
+<!-- Main -->
+<div class="main">
+
+<div class="login-card">
+
+<div class="title">
+🧬 Predictive Oncology
+</div>
+
+<div class="subtitle">
+Sign in to access the <strong>Multi-Cancer Detection System</strong>.  
+Analyze medical images using deep learning and assist in 
+<strong>early cancer diagnosis and clinical decision-making</strong>.
+</div>
+
+<form method="post">
+
+<div class="input-group">
+<input type="text" name="username" placeholder="Enter Username" required>
+</div>
+
+<div class="input-group">
+<input type="password" name="password" placeholder="Enter Password" required>
+</div>
+
+<button class="login-btn">
+🔐 Sign In
+</button>
+
+</form>
+
+<!-- Flash Messages -->
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        {% for category, message in messages %}
+            <div style="padding:12px;border-radius:8px;margin-top:15px;background:{% if category == 'error' %}rgba(239,68,68,0.2);color:#fca5a5;border-left:4px solid #ef4444{% else %}rgba(34,197,94,0.2);color:#86efac;border-left:4px solid #22c55e{% endif %};">
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endif %}
+{% endwith %}
+
+<!-- THEORY -->
+<div class="theory">
+🧠 <strong>About the System:</strong><br>
+This application uses advanced deep learning models such as CNN, VGG16, and ResNet50 
+to detect multiple cancer types including breast, liver, and skin conditions.  
+It supports early diagnosis, improves accuracy, and assists healthcare professionals 
+in making faster clinical decisions.
+</div>
+
+<div class="footer">
+Predictive Oncology using Deep Learning for Multi-Cancer Detection
+</div>
+
+</div>
+
+</div>
+
+<!-- Sidebar -->
+<div class="sidebar">
+
+<div class="logo">
+🧬 Oncology AI
+</div>
+
+<a href="{{ url_for('home') }}">🏠 Home</a>
+<a href="{{ url_for('signin') }}">🔐 Sign In</a>
+<a href="{{ url_for('signup') }}">📝 Register</a>
+
+</div>
+
+</body>
+</html>
+
+```
+
+`templates/signup.html`
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Register | Predictive Oncology AI</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+<style>
+
+*{
+margin:0;
+padding:0;
+box-sizing:border-box;
+font-family:"Poppins",sans-serif;
+}
+
+/* Background */
+body{
+display:flex;
+min-height:100vh;
+background:linear-gradient(135deg,#0f172a,#1e3a8a,#06b6d4);
+color:white;
+}
+
+/* Sidebar */
+.sidebar{
+width:260px;
+background:rgba(0,0,0,0.7);
+backdrop-filter:blur(12px);
+padding:30px;
+position:fixed;
+right:0;
+top:0;
+height:100%;
+display:flex;
+flex-direction:column;
+}
+
+.logo{
+text-align:center;
+font-size:22px;
+font-weight:700;
+color:#22c55e;
+margin-bottom:40px;
+}
+
+.sidebar a{
+text-decoration:none;
+color:white;
+padding:14px;
+margin-bottom:12px;
+border-radius:10px;
+background:rgba(255,255,255,0.05);
+transition:0.3s;
+}
+
+.sidebar a:hover{
+background:linear-gradient(135deg,#22c55e,#4ade80);
+color:black;
+transform:translateX(-5px);
+}
+
+/* Main */
+.main{
+flex:1;
+display:flex;
+justify-content:center;
+align-items:center;
+padding:40px;
+margin-right:260px;
+}
+
+/* Signup Card */
+.signup-card{
+width:100%;
+max-width:420px;
+background:rgba(255,255,255,0.1);
+backdrop-filter:blur(18px);
+border-radius:20px;
+padding:45px 35px;
+box-shadow:0 30px 60px rgba(0,0,0,0.6);
+animation:fadeIn 0.8s ease;
+}
+
+@keyframes fadeIn{
+from{opacity:0; transform:translateY(30px);}
+to{opacity:1; transform:translateY(0);}
+}
+
+/* Title */
+.title{
+text-align:center;
+font-size:26px;
+font-weight:700;
+color:#22c55e;
+margin-bottom:10px;
+}
+
+.subtitle{
+text-align:center;
+font-size:14px;
+color:#cbd5e1;
+margin-bottom:25px;
+line-height:1.6;
+}
+
+/* Inputs */
+.input-group{
+margin-bottom:18px;
+}
+
+.input-group input{
+width:100%;
+padding:14px;
+border:none;
+border-radius:10px;
+font-size:15px;
+outline:none;
+background:rgba(255,255,255,0.95);
+}
+
+/* Button */
+.signup-btn{
+width:100%;
+padding:14px;
+border:none;
+border-radius:30px;
+background:linear-gradient(135deg,#22c55e,#16a34a);
+color:white;
+font-size:16px;
+font-weight:600;
+cursor:pointer;
+transition:0.3s;
+}
+
+.signup-btn:hover{
+transform:translateY(-3px);
+box-shadow:0 12px 30px rgba(34,197,94,0.5);
+}
+
+/* Links */
+.links{
+margin-top:20px;
+text-align:center;
+font-size:14px;
+}
+
+.links a{
+color:#22c55e;
+font-weight:600;
+text-decoration:none;
+}
+
+.links a:hover{
+text-decoration:underline;
+}
+
+/* Info Box */
+.theory{
+margin-top:20px;
+background:rgba(255,255,255,0.05);
+padding:15px;
+border-radius:10px;
+font-size:13px;
+line-height:1.6;
+color:#d1d5db;
+}
+
+/* Footer */
+.footer{
+margin-top:20px;
+text-align:center;
+font-size:12px;
+color:#aaa;
+}
+
+/* Responsive */
+@media(max-width:900px){
+.sidebar{display:none;}
+.main{margin-right:0; padding:20px;}
+}
+
+</style>
+</head>
+
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+
+<div class="logo">
+🧬 Oncology AI
+</div>
+
+<a href="/">🏠 Home</a>
+<a href="/signin">🔐 Sign In</a>
+<a href="/signup">📝 Register</a>
+
+</div>
+
+<!-- Main -->
+<div class="main">
+
+<div class="signup-card">
+
+<div class="title">
+🧬 Create Account
+</div>
+
+<div class="subtitle">
+Register to access the <strong>Multi-Cancer Detection System</strong> powered by 
+<b>Deep Learning (CNN, VGG16, ResNet)</b>.  
+Detect early-stage abnormalities in <strong>Breast, Liver, and Skin cancers</strong>.
+</div>
+
+<form method="post">
+
+<div class="input-group">
+<input type="text" name="username" placeholder="Choose Username" required minlength="3">
+</div>
+
+<div class="input-group">
+<input type="password" name="password" placeholder="Create Password (min 6 chars)" required minlength="6">
+</div>
+
+<button type="submit" class="signup-btn">
+📝 Register Account
+</button>
+
+</form>
+
+<!-- Flash Messages -->
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        {% for category, message in messages %}
+            <div style="padding:12px;border-radius:8px;margin-top:15px;background:{% if category == 'error' %}rgba(239,68,68,0.2);color:#fca5a5;border-left:4px solid #ef4444{% else %}rgba(34,197,94,0.2);color:#86efac;border-left:4px solid #22c55e{% endif %};">
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endif %}
+{% endwith %}
+
+<!-- INFO -->
+<div class="theory">
+🧠 <strong>About the System:</strong><br>
+This AI-powered oncology system analyzes medical images using deep learning models to detect:
+<ul>
+<li>Breast Cancer (Normal, Benign, Malignant)</li>
+<li>Liver Conditions (Healthy, Hepatic Steatosis)</li>
+<li>Skin Diseases (Dermatofibroma, Keratosis)</li>
+</ul>
+Early detection improves treatment outcomes and saves lives.
+</div>
+
+<div class="footer">
+⚠ AI predictions are for research assistance only. Consult medical professionals for diagnosis.
+</div>
+
+</div>
+
+</div>
+
+</body>
+</html>
+
+```
+
+`templates/train.html`
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+
+<meta charset="UTF-8">
+<title>Model Training | Predictive Oncology</title>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+<style>
+
+*{
+margin:0;
+padding:0;
+box-sizing:border-box;
+font-family:"Poppins",sans-serif;
+}
+
+/* Background */
+body{
+display:flex;
+min-height:100vh;
+background:linear-gradient(135deg,#0f172a,#1e3a8a,#06b6d4);
+color:white;
+}
+
+/* Sidebar */
+.sidebar{
+width:260px;
+background:rgba(0,0,0,0.7);
+padding:30px;
+position:fixed;
+height:100%;
+backdrop-filter:blur(12px);
+}
+
+.sidebar .logo{
+font-size:22px;
+text-align:center;
+color:#22c55e;
+margin-bottom:40px;
+font-weight:700;
+}
+
+.sidebar a{
+display:block;
+padding:14px;
+margin-bottom:15px;
+background:rgba(255,255,255,0.08);
+border-radius:10px;
+text-decoration:none;
+color:white;
+transition:0.3s;
+}
+
+.sidebar a:hover{
+background:linear-gradient(135deg,#22c55e,#4ade80);
+color:black;
+transform:translateX(5px);
+}
+
+/* Main */
+.main{
+margin-left:260px;
+width:100%;
+padding:40px;
+}
+
+/* Box */
+.box{
+background:rgba(255,255,255,0.08);
+padding:40px;
+border-radius:20px;
+backdrop-filter:blur(15px);
+box-shadow:0 30px 60px rgba(0,0,0,0.6);
+}
+
+/* Title */
+h2{
+text-align:center;
+margin-bottom:25px;
+color:#22c55e;
+}
+
+/* Logs */
+.logs{
+background:rgba(0,0,0,0.5);
+padding:20px;
+border-radius:12px;
+margin-bottom:25px;
+font-size:14px;
+line-height:1.6;
+}
+
+.logs p{
+margin-bottom:5px;
+}
+
+/* Cards */
+.card{
+background:rgba(0,0,0,0.45);
+padding:25px;
+border-radius:15px;
+margin-bottom:25px;
+text-align:center;
+transition:0.3s;
+}
+
+.card:hover{
+transform:scale(1.02);
+}
+
+.card h3{
+color:#38bdf8;
+margin-bottom:10px;
+}
+
+/* Images */
+.card img{
+width:100%;
+max-width:500px;
+margin-top:10px;
+border-radius:10px;
+box-shadow:0 10px 30px rgba(0,0,0,0.6);
+}
+
+/* Button */
+.btn{
+display:block;
+margin:25px auto;
+padding:12px 30px;
+background:linear-gradient(135deg,#22c55e,#16a34a);
+color:white;
+border:none;
+border-radius:25px;
+cursor:pointer;
+font-weight:600;
+transition:0.3s;
+}
+
+.btn:hover{
+transform:scale(1.05);
+box-shadow:0 10px 25px rgba(34,197,94,0.5);
+}
+
+.center-text{
+text-align:center;
+font-size:16px;
+color:#e2e8f0;
+}
+
+/* Responsive */
+@media(max-width:900px){
+.sidebar{display:none;}
+.main{margin-left:0;padding:20px;}
+}
+
+</style>
+</head>
+
+<body>
+
+<!-- Sidebar -->
+<div class="sidebar">
+<div class="logo">🧬 Oncology AI</div>
+
+<a href="/home">🏠 Home</a>
+<a href="/detection">🔬 Detection</a>
+<a href="/logout">🚪 Logout</a>
+</div>
+
+<!-- Main -->
+<div class="main">
+<div class="box">
+
+<h2>🧠 Model Training</h2>
+
+<!-- Flash Messages -->
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+        {% for category, message in messages %}
+            <div style="padding:15px;border-radius:10px;margin-bottom:20px;background:rgba(34,197,94,0.2);color:#86efac;border-left:4px solid #22c55e;" class="alert alert-{{ category }}">
+                {{ message }}
+            </div>
+        {% endfor %}
+    {% endif %}
+{% endwith %}
+
+{% if logs %}
+
+<div class="logs">
+{% for log in logs %}
+<p>✔ {{log}}</p>
+{% endfor %}
+</div>
+
+{% endif %}
+
+{% if show_graphs %}
+
+<!-- Graphs Container -->
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(500px,1fr));gap:25px;margin-bottom:25px;">
+
+<!-- Graph 1: Accuracy -->
+<div class="card">
+<h3>📈 Accuracy Over Epochs</h3>
+<p style="font-size:12px;color:#cbd5e1;margin-top:5px;">Shows how training and validation accuracy improve over each epoch</p>
+<img src="/static/accuracy.png?t={{ range(1, 1000000)|random }}" alt="Accuracy Chart" style="margin-top:15px;">
+</div>
+
+<!-- Graph 2: Loss -->
+<div class="card">
+<h3>📉 Loss Over Epochs</h3>
+<p style="font-size:12px;color:#cbd5e1;margin-top:5px;">Monitors training and validation loss to detect overfitting</p>
+<img src="/static/loss.png?t={{ range(1, 1000000)|random }}" alt="Loss Chart" style="margin-top:15px;">
+</div>
+
+<!-- Graph 3: Confusion Matrix -->
+<div class="card" style="grid-column:span 1;">
+<h3>🎯 Confusion Matrix</h3>
+<p style="font-size:12px;color:#cbd5e1;margin-top:5px;">Shows prediction accuracy per class - true vs predicted labels</p>
+<img src="/static/confusion_matrix.png?t={{ range(1, 1000000)|random }}" alt="Confusion Matrix" style="margin-top:15px;">
+</div>
+
+<!-- Graph 4: Per-Class Metrics -->
+<div class="card" style="grid-column:span 1;">
+<h3>📊 Per-Class Performance Metrics</h3>
+<p style="font-size:12px;color:#cbd5e1;margin-top:5px;">Compares Precision, Recall, and F1-Score for each disease class</p>
+<img src="/static/metrics.png?t={{ range(1, 1000000)|random }}" alt="Metrics Chart" style="margin-top:15px;">
+</div>
+
+<!-- Graph 5: Overall Statistics -->
+<div class="card">
+<h3>🏆 Overall Model Performance</h3>
+<p style="font-size:12px;color:#cbd5e1;margin-top:5px;">Summary statistics: Accuracy, Precision, Recall, and F1-Score</p>
+<img src="/static/overall_stats.png?t={{ range(1, 1000000)|random }}" alt="Overall Stats" style="margin-top:15px;">
+</div>
+
+<!-- Graph 6: Per-Class Accuracy -->
+<div class="card">
+<h3>✅ Per-Class Accuracy</h3>
+<p style="font-size:12px;color:#cbd5e1;margin-top:5px;">Accuracy percentage for each individual disease class</p>
+<img src="/static/class_accuracy.png?t={{ range(1, 1000000)|random }}" alt="Class Accuracy" style="margin-top:15px;">
+</div>
+
+</div>
+
+{% elif not logs %}
+
+<p class="center-text">⏳ No training results yet. Click below to start training.</p>
+
+<a href="/train?force=1">
+<button class="btn" style="background:linear-gradient(135deg,#3b82f6,#2563eb);">🧠 Start Training</button>
+</a>
+
+{% endif %}
+
+{% if already_trained %}
+<a href="/train?force=1">
+<button class="btn" style="background:linear-gradient(135deg,#f59e0b,#d97706);">🔄 Retrain Model</button>
+</a>
+{% endif %}
+
+<a href="/home">
+<button class="btn">⬅ Back to Dashboard</button>
+</a>
+
+</div>
+</div>
+
+</body>
+</html>
+
+```
+

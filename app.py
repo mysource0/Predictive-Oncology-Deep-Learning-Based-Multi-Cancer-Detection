@@ -5,6 +5,7 @@ from tensorflow.keras.preprocessing import image
 import os
 import json
 import sqlite3
+import time
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import cv2
@@ -20,10 +21,22 @@ from tensorflow.keras import layers, models
 
 load_dotenv()
 
-# Configure Gemini API
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+# Configure Gemini API — multi-key + multi-model fallback
+_raw_keys = os.getenv('GEMINI_API_KEYS', os.getenv('GEMINI_API_KEY', ''))
+GEMINI_API_KEYS = [k.strip() for k in _raw_keys.split(',') if k.strip()]
+
+_raw_models = os.getenv('GEMINI_MODELS', 'gemini-2.5-pro,gemini-2.5-flash,gemini-2.0-flash,gemini-1.5-pro,gemini-1.5-flash')
+GEMINI_MODELS = [m.strip() for m in _raw_models.split(',') if m.strip()]
+
+# Track rate-limited keys: { api_key: timestamp_when_blocked }
+_key_cooldowns = {}
+KEY_COOLDOWN_SECONDS = 60  # seconds to wait before retrying a rate-limited key
+
+if GEMINI_API_KEYS:
+    genai.configure(api_key=GEMINI_API_KEYS[0])
+    print(f"✓ Gemini configured with {len(GEMINI_API_KEYS)} API key(s) and {len(GEMINI_MODELS)} model(s)")
+else:
+    print("⚠ No Gemini API keys configured")
 
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
@@ -68,8 +81,32 @@ def get_suggestion(class_name):
     return _SUGGESTIONS.get(normalized, "Consult doctor for further diagnosis.")
 
 
+def _is_rate_limit_error(error):
+    """Check if an exception is a rate-limit / quota error."""
+    err_str = str(error).lower()
+    rate_keywords = ['429', 'rate limit', 'resource exhausted', 'quota', 'too many requests', 'resourceexhausted']
+    return any(kw in err_str for kw in rate_keywords)
+
+
+def _get_available_keys():
+    """Return API keys that are not currently in cooldown."""
+    now = time.time()
+    available = []
+    for key in GEMINI_API_KEYS:
+        cooldown_until = _key_cooldowns.get(key, 0)
+        if now >= cooldown_until:
+            available.append(key)
+    # If all keys are in cooldown, return them all anyway (best-effort)
+    return available if available else list(GEMINI_API_KEYS)
+
+
 def gemini_validate_and_analyze(image_path, cnn_prediction=None, cnn_confidence=None):
-    """Use Gemini Pro Vision API to validate the image and provide a second opinion.
+    """Use Gemini API to validate the image and provide a second opinion.
+    
+    Implements multi-key + multi-model fallback:
+      - Tries each available API key
+      - For each key, tries each model in GEMINI_MODELS order
+      - On rate-limit errors, marks the key as cooled-down and moves to the next
     
     Returns a dict with:
         - is_medical: bool
@@ -79,20 +116,20 @@ def gemini_validate_and_analyze(image_path, cnn_prediction=None, cnn_confidence=
         - gemini_confidence: int (0-100)
         - severity: str
         - gemini_suggestion: str
+        - model_used: str (which model succeeded)
+        - key_index: int (which key index succeeded)
         - error: str
     """
-    if not GEMINI_API_KEY:
+    if not GEMINI_API_KEYS:
         return {'error': 'Gemini API key not configured', 'is_medical': True}
     
-    try:
-        model = genai.GenerativeModel('gemini-2.5-pro')
-        img = PILImage.open(image_path)
-        
-        cnn_info = ""
-        if cnn_prediction and cnn_confidence:
-            cnn_info = f'\nThe CNN model predicted: "{cnn_prediction}" with {cnn_confidence:.1f}% confidence.'
-        
-        prompt = f"""You are an expert medical image analysis AI assistant integrated into a cancer detection system.
+    img = PILImage.open(image_path)
+    
+    cnn_info = ""
+    if cnn_prediction and cnn_confidence:
+        cnn_info = f'\nThe CNN model predicted: "{cnn_prediction}" with {cnn_confidence:.1f}% confidence.'
+    
+    prompt = f"""You are an expert medical image analysis AI assistant integrated into a cancer detection system.
 
 SUPPORTED CONDITIONS:
 - Breast: Normal, Benign tumor, Malignant tumor (from ultrasound/histopathology images)
@@ -127,38 +164,75 @@ RULES:
 - If NOT a medical image, set is_medical_image to false, gemini_confidence to 0, and explain clearly in rejection_reason
 - Be thorough in analysis_notes — mention specific visual patterns you observe
 - For severity: normal=healthy tissue, low=benign/non-concerning, moderate=needs monitoring, high=likely malignant, critical=urgent"""
-        
-        response = model.generate_content([prompt, img])
-        
-        response_text = response.text.strip()
-        if response_text.startswith('```'):
-            response_text = response_text.split('\n', 1)[1]
-            response_text = response_text.rsplit('```', 1)[0].strip()
-        
-        result = json.loads(response_text)
-        
-        return {
-            'is_medical': result.get('is_medical_image', True),
-            'rejection_reason': result.get('rejection_reason', ''),
-            'image_type': result.get('image_type', 'Unknown'),
-            'organ_detected': result.get('organ_detected', 'Unknown'),
-            'gemini_diagnosis': result.get('gemini_diagnosis', 'N/A'),
-            'detected_condition': result.get('detected_condition', 'N/A'),
-            'confidence_level': result.get('confidence_level', 'low'),
-            'gemini_confidence': result.get('gemini_confidence', 0),
-            'severity': result.get('severity', 'unknown'),
-            'gemini_agrees': result.get('cnn_agrees', False),
-            'analysis_notes': result.get('analysis_notes', ''),
-            'gemini_suggestion': result.get('recommendation', 'Consult a medical professional.'),
-            'error': None
-        }
     
-    except json.JSONDecodeError as e:
-        print(f"Gemini JSON parse error: {e}")
-        return {'error': 'Failed to parse Gemini response', 'is_medical': True}
-    except Exception as e:
-        print(f"Gemini API error: {e}")
-        return {'error': f'Gemini API error: {str(e)}', 'is_medical': True}
+    available_keys = _get_available_keys()
+    last_error = None
+    attempts = []
+    
+    for key_idx, api_key in enumerate(available_keys):
+        # Configure genai with this key
+        genai.configure(api_key=api_key)
+        key_label = f"Key #{GEMINI_API_KEYS.index(api_key) + 1}"
+        
+        for model_name in GEMINI_MODELS:
+            attempt_label = f"{key_label} + {model_name}"
+            try:
+                print(f"🔄 Trying {attempt_label}...")
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content([prompt, img])
+                
+                response_text = response.text.strip()
+                if response_text.startswith('```'):
+                    response_text = response_text.split('\n', 1)[1]
+                    response_text = response_text.rsplit('```', 1)[0].strip()
+                
+                result = json.loads(response_text)
+                
+                print(f"✅ Success with {attempt_label}")
+                
+                return {
+                    'is_medical': result.get('is_medical_image', True),
+                    'rejection_reason': result.get('rejection_reason', ''),
+                    'image_type': result.get('image_type', 'Unknown'),
+                    'organ_detected': result.get('organ_detected', 'Unknown'),
+                    'gemini_diagnosis': result.get('gemini_diagnosis', 'N/A'),
+                    'detected_condition': result.get('detected_condition', 'N/A'),
+                    'confidence_level': result.get('confidence_level', 'low'),
+                    'gemini_confidence': result.get('gemini_confidence', 0),
+                    'severity': result.get('severity', 'unknown'),
+                    'gemini_agrees': result.get('cnn_agrees', False),
+                    'analysis_notes': result.get('analysis_notes', ''),
+                    'gemini_suggestion': result.get('recommendation', 'Consult a medical professional.'),
+                    'model_used': model_name,
+                    'key_index': GEMINI_API_KEYS.index(api_key) + 1,
+                    'error': None
+                }
+            
+            except json.JSONDecodeError as e:
+                print(f"⚠ JSON parse error with {attempt_label}: {e}")
+                last_error = f'Failed to parse Gemini response ({model_name})'
+                attempts.append(f"{attempt_label}: JSON parse error")
+                # JSON error is not a rate limit — try next model but same key
+                continue
+            
+            except Exception as e:
+                print(f"❌ Error with {attempt_label}: {e}")
+                attempts.append(f"{attempt_label}: {str(e)[:80]}")
+                
+                if _is_rate_limit_error(e):
+                    # Mark this key as rate-limited and skip to next key
+                    _key_cooldowns[api_key] = time.time() + KEY_COOLDOWN_SECONDS
+                    print(f"🚫 {key_label} rate-limited, cooling down for {KEY_COOLDOWN_SECONDS}s")
+                    last_error = f'Rate limit hit on all attempted keys/models'
+                    break  # Break inner model loop — move to next key
+                else:
+                    last_error = f'Gemini API error: {str(e)}'
+                    # Non-rate-limit error — try next model
+                    continue
+    
+    # All combinations exhausted
+    print(f"❌ All Gemini attempts failed. Tried: {attempts}")
+    return {'error': last_error or 'All Gemini API keys/models exhausted', 'is_medical': True}
 
 
 def init_db():
